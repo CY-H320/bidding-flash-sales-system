@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # PostgreSQL database settings
-    POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "postgres"
+    POSTGRES_USER: str = "yokura"
+    POSTGRES_PASSWORD: str = "1234"
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "bidding-flash-sale-system"

@@ -10,7 +10,7 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.product import BiddingProduct
-    from app.models.bid import BiddingSession, BiddingSessionRanking
+    from app.models.bid import BiddingSession, BiddingSessionRanking, BiddingSessionBid
 
 
 class User(Base):
@@ -48,6 +48,9 @@ class User(Base):
     )
     rankings: Mapped[list["BiddingSessionRanking"]] = relationship(
         "BiddingSessionRanking", back_populates="user"
+    )
+    bids: Mapped[list["BiddingSessionBid"]] = relationship(
+        "BiddingSessionBid", back_populates="user"
     )
 
     def __repr__(self) -> str:

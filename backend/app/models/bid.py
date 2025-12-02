@@ -58,6 +58,9 @@ class BiddingSession(Base):
     rankings: Mapped[list["BiddingSessionRanking"]] = relationship(
         "BiddingSessionRanking", back_populates="session"
     )
+    bids: Mapped[list["BiddingSessionBid"]] = relationship(
+        "BiddingSessionBid", back_populates="session"
+    )
 
     def __repr__(self) -> str:
         return f"<BiddingSession(id={self.id}, product_id={self.product_id})>"
