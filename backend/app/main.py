@@ -20,6 +20,13 @@ except ImportError:
     has_admin = False
     print("Warning: admin router not found")
 
+try:
+    from app.api import websocket
+    has_websocket = True
+except ImportError:
+    has_websocket = False
+    print("Warning: websocket router not found")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -79,6 +86,9 @@ if has_auth:
 
 if has_admin:
     app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
+
+if has_websocket:
+    app.include_router(websocket.router, tags=["WebSocket"])
 
 
 @app.get("/")

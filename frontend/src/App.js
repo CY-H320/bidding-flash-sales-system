@@ -13,20 +13,55 @@ const BiddingSystemUI = () => {
   const [leaderboard, setLeaderboard] = useState([]);
   const [bidAmount, setBidAmount] = useState('');
   const [message, setMessage] = useState('');
+  const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef(null);
 
   useEffect(() => {
     if (user && selectedProduct) {
-      // Load leaderboard when product is selected
+      // Load initial leaderboard
       loadLeaderboard(selectedProduct.session_id);
 
-      // Set up polling for leaderboard updates (every 3 seconds)
-      const intervalId = setInterval(() => {
-        loadLeaderboard(selectedProduct.session_id);
-      }, 3000);
+      // Set up WebSocket connection for real-time updates
+      const ws = new WebSocket(`ws://localhost:8000/ws/${selectedProduct.session_id}`);
+      wsRef.current = ws;
 
+      ws.onopen = () => {
+        console.log(`WebSocket connected to session ${selectedProduct.session_id}`);
+        setWsConnected(true);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === 'leaderboard_update' && message.data) {
+            setLeaderboard(message.data.leaderboard || []);
+          }
+        } catch (error) {
+          console.error('Error parsing WebSocket message:', error);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        setWsConnected(false);
+        // Fallback to polling if WebSocket fails
+        const intervalId = setInterval(() => {
+          loadLeaderboard(selectedProduct.session_id);
+        }, 3000);
+        return () => clearInterval(intervalId);
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket disconnected');
+        setWsConnected(false);
+      };
+
+      // Cleanup on component unmount or product change
       return () => {
-        clearInterval(intervalId);
+        if (wsRef.current) {
+          wsRef.current.close();
+          wsRef.current = null;
+        }
       };
     }
   }, [user, selectedProduct]);
@@ -78,21 +113,29 @@ const BiddingSystemUI = () => {
       const data = await response.json();
       // Backend returns array directly, map to expected format
       const sessions = Array.isArray(data) ? data : [];
-      setProducts(sessions.map(session => ({
-        id: session.session_id,
-        session_id: session.session_id,
-        product_id: session.product_id,
-        name: session.name,
-        description: session.description,
-        inventory: session.inventory,
-        base_price: session.base_price,
-        alpha: session.alpha,
-        beta: session.beta,
-        gamma: session.gamma,
-        start_time: session.start_time,
-        end_time: session.end_time,
-        status: session.status
-      })));
+      const now = new Date();
+
+      setProducts(sessions.map(session => {
+        const endTime = new Date(session.end_time);
+        const isEnded = now > endTime;
+
+        return {
+          id: session.session_id,
+          session_id: session.session_id,
+          product_id: session.product_id,
+          name: session.name,
+          description: session.description,
+          inventory: session.inventory,
+          base_price: session.base_price,
+          alpha: session.alpha,
+          beta: session.beta,
+          gamma: session.gamma,
+          start_time: session.start_time,
+          end_time: session.end_time,
+          status: isEnded ? 'ended' : 'active',
+          isEnded: isEnded
+        };
+      }));
     } catch (error) {
       console.error('Failed to load products:', error);
       setMessage('Failed to load active sessions');
@@ -129,8 +172,7 @@ const BiddingSystemUI = () => {
       if (response.ok) {
         setMessage(`Bid submitted! Your score: ${data.score?.toFixed(2)}, Rank: ${data.rank}`);
         setBidAmount('');
-        // Refresh leaderboard after bid
-        loadLeaderboard(selectedProduct.session_id);
+        // WebSocket will automatically update the leaderboard
       } else {
         // Handle validation errors
         if (Array.isArray(data.detail)) {
@@ -238,6 +280,7 @@ const BiddingSystemUI = () => {
             setBidAmount={setBidAmount}
             onBid={handleBid}
             userWeight={user.weight}
+            wsConnected={wsConnected}
           />
         )}
         {view === 'admin' && (
@@ -334,17 +377,20 @@ const LoginView = ({ onAuth }) => {
   );
 };
 
-const UserView = ({ products, selectedProduct, setSelectedProduct, leaderboard, bidAmount, setBidAmount, onBid, userWeight }) => {
+const UserView = ({ products, selectedProduct, setSelectedProduct, leaderboard, bidAmount, setBidAmount, onBid, userWeight, wsConnected }) => {
+  const activeProducts = products.filter(p => !p.isEnded);
+  const endedProducts = products.filter(p => p.isEnded);
+
   return (
     <div className="user-view">
       <div className="sidebar">
         <div className="card">
           <h3 className="card-title">
             <Package size={24} />
-            Available Products
+            Active Sales
           </h3>
           <div className="product-list">
-            {products.map((product) => (
+            {activeProducts.map((product) => (
               <button
                 key={product.id}
                 onClick={() => setSelectedProduct(product)}
@@ -353,20 +399,74 @@ const UserView = ({ products, selectedProduct, setSelectedProduct, leaderboard, 
                 <div className="product-name">{product.name}</div>
                 <div className="product-detail">Stock: {product.inventory}</div>
                 <div className="product-detail">Base Price: ${product.base_price}</div>
+                <div className="product-status" style={{ color: '#4caf50', fontSize: '12px', marginTop: '4px' }}>
+                  🟢 Bidding Open
+                </div>
               </button>
             ))}
-            {products.length === 0 && (
-              <p className="empty-state">No products available</p>
+            {activeProducts.length === 0 && (
+              <p className="empty-state">No active sales</p>
             )}
           </div>
         </div>
+
+        {endedProducts.length > 0 && (
+          <div className="card" style={{ marginTop: '16px' }}>
+            <h3 className="card-title">
+              <Package size={24} />
+              Ended Sales
+            </h3>
+            <div className="product-list">
+              {endedProducts.map((product) => (
+                <button
+                  key={product.id}
+                  onClick={() => setSelectedProduct(product)}
+                  className={`product-item ${selectedProduct?.id === product.id ? 'active' : ''}`}
+                  style={{ opacity: 0.7 }}
+                >
+                  <div className="product-name">{product.name}</div>
+                  <div className="product-detail">Stock: {product.inventory}</div>
+                  <div className="product-detail">Base Price: ${product.base_price}</div>
+                  <div className="product-status" style={{ color: '#f44336', fontSize: '12px', marginTop: '4px' }}>
+                    🔴 Bidding Closed
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="main-area">
         {selectedProduct ? (
           <>
             <div className="card">
-              <h3>{selectedProduct.name}</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h3 style={{ margin: 0 }}>{selectedProduct.name}</h3>
+                {selectedProduct.isEnded ? (
+                  <span style={{
+                    padding: '6px 12px',
+                    backgroundColor: '#f44336',
+                    color: 'white',
+                    borderRadius: '4px',
+                    fontSize: '14px',
+                    fontWeight: 'bold'
+                  }}>
+                    BIDDING ENDED
+                  </span>
+                ) : (
+                  <span style={{
+                    padding: '6px 12px',
+                    backgroundColor: '#4caf50',
+                    color: 'white',
+                    borderRadius: '4px',
+                    fontSize: '14px',
+                    fontWeight: 'bold'
+                  }}>
+                    LIVE
+                  </span>
+                )}
+              </div>
               <div className="stats-grid">
                 <div className="stat-box">
                   <div className="stat-label">Base Price</div>
@@ -387,30 +487,58 @@ const UserView = ({ products, selectedProduct, setSelectedProduct, leaderboard, 
                   </div>
                 </div>
               </div>
-              
-              <div className="bid-form">
-                <label>Your Bid Amount ($)</label>
-                <input
-                  type="number"
-                  value={bidAmount}
-                  onChange={(e) => setBidAmount(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && onBid()}
-                  min={selectedProduct.base_price}
-                  step="0.01"
-                  placeholder={`Min: $${selectedProduct.base_price}`}
-                  className="input input-large"
-                />
-                <button onClick={onBid} className="btn btn-primary btn-full btn-large">
-                  Submit Bid
-                </button>
-              </div>
+
+              {selectedProduct.isEnded ? (
+                <div style={{
+                  padding: '20px',
+                  backgroundColor: '#f5f5f5',
+                  borderRadius: '8px',
+                  textAlign: 'center',
+                  marginTop: '20px'
+                }}>
+                  <p style={{ fontSize: '16px', color: '#666', margin: 0 }}>
+                    This bidding session has ended. You can view the final leaderboard below.
+                  </p>
+                </div>
+              ) : (
+                <div className="bid-form">
+                  <label>Your Bid Amount ($)</label>
+                  <input
+                    type="number"
+                    value={bidAmount}
+                    onChange={(e) => setBidAmount(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && onBid()}
+                    min={selectedProduct.base_price}
+                    step="0.01"
+                    placeholder={`Min: $${selectedProduct.base_price}`}
+                    className="input input-large"
+                  />
+                  <button onClick={onBid} className="btn btn-primary btn-full btn-large">
+                    Submit Bid
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="card">
-              <h3 className="card-title">
-                <Award size={24} color="#ffc107" />
-                Live Leaderboard (Top {selectedProduct.inventory})
-              </h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <h3 className="card-title" style={{ margin: 0 }}>
+                  <Award size={24} color="#ffc107" />
+                  {selectedProduct.isEnded ? 'Final Results' : 'Live Leaderboard'} (Top {selectedProduct.inventory})
+                </h3>
+                {!selectedProduct.isEnded && (
+                  <span style={{
+                    padding: '4px 8px',
+                    backgroundColor: wsConnected ? '#4caf50' : '#ff9800',
+                    color: 'white',
+                    borderRadius: '4px',
+                    fontSize: '11px',
+                    fontWeight: 'bold'
+                  }}>
+                    {wsConnected ? '🟢 LIVE' : '⚠️ POLLING'}
+                  </span>
+                )}
+              </div>
               {leaderboard.length > 0 ? (
                 <div className="leaderboard">
                   {leaderboard.map((entry, index) => (

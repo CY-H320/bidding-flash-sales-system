@@ -1,5 +1,4 @@
 .docker-data
 .venv
 __pycache__
-
 .env

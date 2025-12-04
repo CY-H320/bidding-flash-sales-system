@@ -24,6 +24,13 @@ from app.models.bid import BiddingSession, BiddingSessionBid
 from app.models.product import BiddingProduct
 from app.api.auth import get_current_user
 
+# Import WebSocket broadcast function
+try:
+    from app.api.websocket import broadcast_leaderboard_update
+    has_websocket = True
+except ImportError:
+    has_websocket = False
+
 router = APIRouter()
 
 
@@ -101,7 +108,14 @@ async def submit_bid(
             db.add(new_bid)
         
         await db.commit()
-        
+
+        # Broadcast leaderboard update via WebSocket
+        if has_websocket:
+            try:
+                await broadcast_leaderboard_update(str(bid_data.session_id), redis, db)
+            except Exception as ws_error:
+                print(f"WebSocket broadcast error: {ws_error}")
+
         return BidResponse(
             status="accepted",
             score=round(result["score"], 2),
@@ -109,7 +123,7 @@ async def submit_bid(
             current_price=bid_data.price,
             message="Bid submitted successfully"
         )
-        
+
     except Exception as e:
         await db.rollback()
         raise HTTPException(
