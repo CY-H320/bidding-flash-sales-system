@@ -1,13 +1,16 @@
 # app/main.py
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 
 # Import API routers
 from app.api import bid
+
 # Import new auth and admin routers
 try:
     from app.api import auth
+
     has_auth = True
 except ImportError:
     has_auth = False
@@ -15,6 +18,7 @@ except ImportError:
 
 try:
     from app.api import admin
+
     has_admin = True
 except ImportError:
     has_admin = False
@@ -22,6 +26,7 @@ except ImportError:
 
 try:
     from app.api import websocket
+
     has_websocket = True
 except ImportError:
     has_websocket = False
@@ -33,7 +38,10 @@ async def lifespan(app: FastAPI):
     """
     Startup and shutdown events for FastAPI application.
     """
+    import asyncio
+
     from app.core.redis import redis_client
+    from app.tasks.session_monitor import session_monitor_task
 
     # Connect to Redis on startup
     try:
@@ -42,8 +50,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠ Redis connection failed: {e}")
 
+    # Start session monitor background task
+    monitor_task = asyncio.create_task(session_monitor_task())
+    print("✓ Session monitor started")
+
     print("✓ Application started")
     yield
+
+    # Cancel session monitor task
+    monitor_task.cancel()
+    try:
+        await monitor_task
+    except asyncio.CancelledError:
+        print("✓ Session monitor stopped")
 
     # Disconnect from Redis on shutdown
     try:
@@ -60,7 +79,7 @@ app = FastAPI(
     title="Bidding Flash Sale System API",
     description="Real-time bidding system with WebSocket support",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # CORS middleware (allow frontend to connect)
@@ -70,7 +89,7 @@ app.add_middleware(
         "http://localhost:3000",  # React development server
         "http://localhost:3001",  # Alternative port
         "http://127.0.0.1:3000",
-        "*"  # Allow all origins for development (remove in production)
+        "*",  # Allow all origins for development (remove in production)
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -97,7 +116,7 @@ async def root():
     return {
         "message": "Bidding Flash Sale System API",
         "status": "running",
-        "version": "1.0.0"
+        "version": "1.0.0",
     }
 
 
@@ -109,9 +128,5 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    )
+
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

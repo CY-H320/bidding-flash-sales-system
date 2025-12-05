@@ -5,12 +5,13 @@ from uuid import uuid4
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Interval
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import func
 
 from app.core.database import Base
 
 if TYPE_CHECKING:
-    from app.models.user import User
     from app.models.product import BiddingProduct
+    from app.models.user import User
 
 
 class BiddingSession(Base):
@@ -38,17 +39,24 @@ class BiddingSession(Base):
     beta: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     gamma: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
 
-    start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-    end_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    start_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    end_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
     duration: Mapped[int] = mapped_column(Interval, nullable=False)  # 競標時長
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     admin: Mapped["User"] = relationship("User", back_populates="sessions")
@@ -88,10 +96,13 @@ class BiddingSessionBid(Base):
     bid_score: Mapped[float] = mapped_column(Float, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     session: Mapped["BiddingSession"] = relationship(
@@ -128,10 +139,13 @@ class BiddingSessionRanking(Base):
     is_winner: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     session: Mapped["BiddingSession"] = relationship(

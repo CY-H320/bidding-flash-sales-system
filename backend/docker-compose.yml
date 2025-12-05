@@ -8,6 +8,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: bidding-flash-sale-system
+      POSTGRES_HOST_AUTH_METHOD: trust
     ports:
       - "5432:5432"
     volumes:
@@ -21,12 +22,11 @@ services:
     volumes:
       - ./.docker-data/redis_data:/data
 
-  # RabbitMQ is optional - uncomment if needed for message queue features
-  # rabbitmq:
-  #   image: rabbitmq:management-alpine
-  #   container_name: rabbitmq
-  #   ports:
-  #     - "5672:5672"
-  #     - "15672:15672"
-  #   volumes:
-  #     - ./.docker-data/rabbitmq_data:/var/lib/rabbitmq
+  rabbitmq:
+    image: rabbitmq:management-alpine
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - ./.docker-data/rabbitmq_data:/var/lib/rabbitmq

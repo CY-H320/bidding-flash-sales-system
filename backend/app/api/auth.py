@@ -1,17 +1,18 @@
 # app/api/auth.py
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+import os
 from datetime import datetime, timedelta
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-import os
-from uuid import uuid4
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_db
 from app.models.user import User
-from app.schemas.auth import UserRegister, UserLogin, UserResponse
+from app.schemas.auth import UserLogin, UserRegister, UserResponse
 
 router = APIRouter()
 
@@ -44,15 +45,14 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    
+
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_async_db)
+    token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_async_db)
 ) -> User:
     """
     Dependency to get current authenticated user from JWT token.
@@ -63,7 +63,7 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
@@ -71,23 +71,18 @@ async def get_current_user(
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-    
-    result = await db.execute(
-        select(User).where(User.id == user_id)
-    )
+
+    result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
-    
+
     if user is None:
         raise credentials_exception
-    
+
     return user
 
 
 @router.post("/register", response_model=UserResponse)
-async def register(
-    user_data: UserRegister,
-    db: AsyncSession = Depends(get_async_db)
-):
+async def register(user_data: UserRegister, db: AsyncSession = Depends(get_async_db)):
     """
     Register a new user.
 
@@ -95,28 +90,23 @@ async def register(
     {
         "username": "user1",
         "email": "user1@test.com",
-        "password": "test123"
+        "password": "test123",
+        "is_admin": true
     }
     """
 
     # Check if username exists
-    result = await db.execute(
-        select(User).where(User.username == user_data.username)
-    )
+    result = await db.execute(select(User).where(User.username == user_data.username))
     if result.scalar_one_or_none():
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already exists"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists"
         )
-    
+
     # Check if email exists
-    result = await db.execute(
-        select(User).where(User.email == user_data.email)
-    )
+    result = await db.execute(select(User).where(User.email == user_data.email))
     if result.scalar_one_or_none():
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already exists"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Email already exists"
         )
 
     # Create new user
@@ -126,34 +116,31 @@ async def register(
         username=user_data.username,
         email=user_data.email,
         password=hashed_password,
-        is_admin=False,
+        is_admin=user_data.is_admin,
         weight=1.0 + (hash(user_data.username) % 100) / 100,  # Random weight 1.0-2.0
         created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
+        updated_at=datetime.utcnow(),
     )
-    
+
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
-    
+
     # Create token
     access_token = create_access_token(data={"sub": str(new_user.id)})
-    
+
     return {
         "user_id": str(new_user.id),
         "username": new_user.username,
         "email": new_user.email,
         "token": access_token,
         "weight": new_user.weight,
-        "is_admin": new_user.is_admin
+        "is_admin": new_user.is_admin,
     }
 
 
 @router.post("/login", response_model=UserResponse)
-async def login(
-    credentials: UserLogin,
-    db: AsyncSession = Depends(get_async_db)
-):
+async def login(credentials: UserLogin, db: AsyncSession = Depends(get_async_db)):
     """
     Login user and return JWT token.
 
@@ -165,9 +152,7 @@ async def login(
     """
 
     # Find user by username
-    result = await db.execute(
-        select(User).where(User.username == credentials.username)
-    )
+    result = await db.execute(select(User).where(User.username == credentials.username))
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(credentials.password, user.password):
@@ -176,17 +161,17 @@ async def login(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     # Create access token
     access_token = create_access_token(data={"sub": str(user.id)})
-    
+
     return {
         "user_id": str(user.id),
         "username": user.username,
         "email": user.email,
         "token": access_token,
         "weight": user.weight,
-        "is_admin": user.is_admin
+        "is_admin": user.is_admin,
     }
 
 
@@ -201,5 +186,5 @@ async def get_me(current_user: User = Depends(get_current_user)):
         "username": current_user.username,
         "email": current_user.email,
         "weight": current_user.weight,
-        "is_admin": current_user.is_admin
+        "is_admin": current_user.is_admin,
     }

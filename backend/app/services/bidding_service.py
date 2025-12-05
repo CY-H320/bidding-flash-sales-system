@@ -1,14 +1,13 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
-
-from redis.asyncio import Redis
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.bid import BiddingSession
 from app.models.user import User
+from redis.asyncio import Redis
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def check_session_active(
@@ -25,7 +24,7 @@ async def check_session_active(
         try:
             start_time = datetime.fromisoformat(cached["start_time"])
             end_time = datetime.fromisoformat(cached["end_time"])
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             if now < start_time:
                 return False, "Bidding session has not started yet"
             elif now > end_time:
@@ -51,7 +50,7 @@ async def check_session_active(
     if not is_active:
         return False, "Bidding session is not active"
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if now < start_time:
         return False, "Bidding session has not started yet"
     elif now > end_time:
@@ -154,7 +153,7 @@ async def process_new_bid(
     db: AsyncSession,
 ) -> dict:
     """Process a new bid: calculate score and store in Redis ZSET."""
-    bid_timestamp = datetime.utcnow()
+    bid_timestamp = datetime.now(timezone.utc)
 
     # Fetch session parameters and user weight in parallel
     (alpha, beta, gamma, start_time), weight = await asyncio.gather(

@@ -43,3 +43,4 @@ typing-extensions==4.15.0
 typing-inspection==0.4.2
 uvicorn==0.38.0
 virtualenv==20.35.4
+psycopg2-binary==2.9.11
