@@ -46,12 +46,15 @@ async def submit_bid(
 ):
     """Submit or update a bid"""
 
+    print(f"📥 Bid received: user={current_user.username}, session={bid_data.session_id}, price={bid_data.price}")
+
     # Check if session is active
     is_active, error_message = await check_session_active(
         redis=redis, session_id=bid_data.session_id, db=db
     )
 
     if not is_active:
+        print(f"❌ Bid rejected: {error_message}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=error_message
         )
@@ -70,6 +73,7 @@ async def submit_bid(
         )
 
     if bid_data.price < upset_price:
+        print(f"❌ Bid rejected: price {bid_data.price} < upset_price {upset_price}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Bid must be at least ${upset_price}",
@@ -97,12 +101,15 @@ async def submit_bid(
         if existing_bid:
             existing_bid.bid_price = bid_data.price
             existing_bid.bid_score = result["score"]
+            existing_bid.updated_at = datetime.now()
         else:
             new_bid = BiddingSessionBid(
                 session_id=bid_data.session_id,
                 user_id=current_user.id,
                 bid_price=bid_data.price,
                 bid_score=result["score"],
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
             )
             db.add(new_bid)
 
@@ -125,6 +132,9 @@ async def submit_bid(
 
     except Exception as e:
         await db.rollback()
+        print(f"❌ Bid processing error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )
@@ -240,12 +250,16 @@ async def get_all_sessions_endpoint(
     )
 
     sessions = []
-    now = datetime.now(timezone.utc)
+    # Use naive datetime to match what's in the database
+    now = datetime.now()
 
     for row in result:
         # Determine status based on is_active flag and end_time
-        # Even if is_active is True, if time has passed, it's effectively ended
-        is_ended = not row.is_active or now > row.end_time
+        # Strip timezone info if present to compare apples to apples
+        end_time = row.end_time
+        if end_time.tzinfo is not None:
+            end_time = end_time.replace(tzinfo=None)
+        is_ended = not row.is_active or now > end_time
 
         sessions.append(
             {

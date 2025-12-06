@@ -24,7 +24,21 @@ async def check_session_active(
         try:
             start_time = datetime.fromisoformat(cached["start_time"])
             end_time = datetime.fromisoformat(cached["end_time"])
-            now = datetime.now(timezone.utc)
+
+            # Strip timezone info to match database approach
+            if start_time.tzinfo is not None:
+                start_time = start_time.replace(tzinfo=None)
+            if end_time.tzinfo is not None:
+                end_time = end_time.replace(tzinfo=None)
+
+            # Use naive local time for comparison
+            now = datetime.now()
+
+            print(f"⏰ [CACHE] Time check for session {session_id}:")
+            print(f"   Now:   {now}")
+            print(f"   Start: {start_time}")
+            print(f"   End:   {end_time}")
+
             if now < start_time:
                 return False, "Bidding session has not started yet"
             elif now > end_time:
@@ -47,10 +61,34 @@ async def check_session_active(
 
     start_time, end_time, is_active = row
 
+    print(f"🔍 DB row values: start_time={start_time} (tzinfo={start_time.tzinfo}), end_time={end_time} (tzinfo={end_time.tzinfo}), is_active={is_active}")
+
     if not is_active:
         return False, "Bidding session is not active"
 
-    now = datetime.now(timezone.utc)
+    # Handle timezone-aware vs naive datetimes
+    # If times from DB are naive, compare with naive local time
+    # If times from DB are aware, compare with aware UTC time
+    if start_time.tzinfo is None and end_time.tzinfo is None:
+        print(f"⚠️  Times are timezone-naive, using local time for comparison")
+        now = datetime.now()  # Use naive local time to match DB
+    else:
+        print(f"✓ Times are timezone-aware, using UTC for comparison")
+        # Make timezone-aware if needed
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+
+    # Debug logging
+    print(f"⏰ Time check for session {session_id}:")
+    print(f"   Now:        {now} ({now.tzinfo if hasattr(now, 'tzinfo') else 'naive'})")
+    print(f"   Start:      {start_time} ({start_time.tzinfo if hasattr(start_time, 'tzinfo') else 'naive'})")
+    print(f"   End:        {end_time} ({end_time.tzinfo if hasattr(end_time, 'tzinfo') else 'naive'})")
+    print(f"   Now < Start: {now < start_time}")
+    print(f"   Now > End:   {now > end_time}")
+
     if now < start_time:
         return False, "Bidding session has not started yet"
     elif now > end_time:
@@ -153,13 +191,18 @@ async def process_new_bid(
     db: AsyncSession,
 ) -> dict:
     """Process a new bid: calculate score and store in Redis ZSET."""
-    bid_timestamp = datetime.now(timezone.utc)
+    # Use naive local time to match session times
+    bid_timestamp = datetime.now()
 
     # Fetch session parameters and user weight in parallel
     (alpha, beta, gamma, start_time), weight = await asyncio.gather(
         get_session_params_from_cache(redis, session_id, db),
         get_user_weight_from_cache(redis, user_id, db),
     )
+
+    # Ensure both timestamps are naive for subtraction
+    if start_time.tzinfo is not None:
+        start_time = start_time.replace(tzinfo=None)
 
     response_time = (bid_timestamp - start_time).total_seconds()
 

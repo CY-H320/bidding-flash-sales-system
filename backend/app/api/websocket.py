@@ -217,7 +217,8 @@ async def broadcast_leaderboard_update(session_id: str, redis: Redis, db: AsyncS
 async def get_all_sessions(db: AsyncSession):
     """Fetch all sessions with correct status"""
     try:
-        now = datetime.now(timezone.utc)
+        # Use naive datetime to match what's in the database
+        now = datetime.now()
 
         result = await db.execute(
             select(
@@ -239,7 +240,11 @@ async def get_all_sessions(db: AsyncSession):
         sessions = []
         for row in result:
             # Determine status based on is_active flag and end_time
-            is_ended = not row.is_active or now > row.end_time
+            # Strip timezone info if present to compare apples to apples
+            end_time = row.end_time
+            if end_time.tzinfo is not None:
+                end_time = end_time.replace(tzinfo=None)
+            is_ended = not row.is_active or now > end_time
 
             sessions.append(
                 {
@@ -268,14 +273,19 @@ async def get_all_sessions(db: AsyncSession):
         return []
 
 
-async def broadcast_session_list_update(db: AsyncSession):
+async def broadcast_session_list_update(db: AsyncSession = None):
     """
     Broadcast session list update to all connected clients.
+    Creates its own DB session to ensure fresh data.
     """
-    sessions = await get_all_sessions(db)
-    print(
-        f"✓ Broadcasting session list update: {len(sessions)} sessions to {len(session_list_manager.active_connections.get('session_list', []))} connections"
-    )
-    await session_list_manager.broadcast_to_session(
-        "session_list", {"type": "session_list_update", "data": sessions}
-    )
+    # Create a fresh database session to get the latest data
+    from app.core.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as fresh_db:
+        sessions = await get_all_sessions(fresh_db)
+        print(
+            f"✓ Broadcasting session list update: {len(sessions)} sessions to {len(session_list_manager.active_connections.get('session_list', []))} connections"
+        )
+        await session_list_manager.broadcast_to_session(
+            "session_list", {"type": "session_list_update", "data": sessions}
+        )

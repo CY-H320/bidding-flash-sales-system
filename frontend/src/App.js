@@ -85,6 +85,7 @@ const BiddingSystemUI = () => {
       sessionWs.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
+          console.log('📩 WebSocket message received:', message.type);
           if (message.type === 'session_list_update' && message.data) {
             console.log('✓ Session list updated, received', message.data.length, 'sessions');
 
@@ -342,6 +343,8 @@ const BiddingSystemUI = () => {
   const handleBid = async () => {
     if (!bidAmount || !selectedProduct) return;
 
+    console.log('📤 Submitting bid:', { session_id: selectedProduct.session_id, price: parseFloat(bidAmount) });
+
     try {
       const response = await fetch(`${API_BASE}/bid`, {
         method: 'POST',
@@ -356,6 +359,8 @@ const BiddingSystemUI = () => {
       });
 
       const data = await response.json();
+      console.log('📥 Bid response:', { status: response.status, data });
+
       if (response.ok) {
         setMessage(`Bid submitted! Your score: ${data.score?.toFixed(2)}, Rank: ${data.rank}`);
         setBidAmount('');
@@ -372,6 +377,7 @@ const BiddingSystemUI = () => {
         }
       }
     } catch (error) {
+      console.error('❌ Bid error:', error);
       setMessage('Failed to submit bid');
     }
   };

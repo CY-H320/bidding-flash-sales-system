@@ -47,8 +47,8 @@ async def create_product(
         name=product_data.name,
         description=product_data.description,
         admin_id=current_user.id,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
     )
 
     db.add(new_product)
@@ -121,8 +121,8 @@ async def create_session(
             status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
         )
 
-    # Create session
-    start_time = datetime.now(timezone.utc)
+    # Create session using local time
+    start_time = datetime.now()
     end_time = start_time + timedelta(minutes=session_data.duration_minutes)
 
     new_session = BiddingSession(
@@ -138,8 +138,8 @@ async def create_session(
         end_time=end_time,
         duration=timedelta(minutes=session_data.duration_minutes),
         is_active=True,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
     )
 
     db.add(new_session)
@@ -150,9 +150,13 @@ async def create_session(
     try:
         from app.api.websocket import broadcast_session_list_update
 
-        await broadcast_session_list_update(db)
+        print(f"🔔 Broadcasting new session creation: {new_session.id}")
+        await broadcast_session_list_update()
+        print(f"✓ Broadcast completed for session: {new_session.id}")
     except Exception as e:
-        print(f"WebSocket broadcast error: {e}")
+        print(f"❌ WebSocket broadcast error: {e}")
+        import traceback
+        traceback.print_exc()
 
     return {
         "session_id": str(new_session.id),
@@ -194,16 +198,20 @@ async def create_product_and_session(
         name=combined_data.name,
         description=combined_data.description,
         admin_id=current_user.id,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
     )
 
     db.add(new_product)
     await db.flush()  # Get the product ID
 
-    # Create session
-    start_time = datetime.now(timezone.utc)
+    # Create session using local time
+    start_time = datetime.now()
     end_time = start_time + timedelta(minutes=combined_data.duration_minutes)
+
+    print(f"🕒 Creating session with times:")
+    print(f"   start_time: {start_time}")
+    print(f"   end_time: {end_time}")
 
     new_session = BiddingSession(
         id=uuid4(),
@@ -218,8 +226,8 @@ async def create_product_and_session(
         end_time=end_time,
         duration=timedelta(minutes=combined_data.duration_minutes),
         is_active=True,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
     )
 
     db.add(new_session)
@@ -229,9 +237,13 @@ async def create_product_and_session(
     try:
         from app.api.websocket import broadcast_session_list_update
 
-        await broadcast_session_list_update(db)
+        print(f"🔔 Broadcasting new product+session creation: {new_session.id}")
+        await broadcast_session_list_update()
+        print(f"✓ Broadcast completed for product+session: {new_session.id}")
     except Exception as e:
-        print(f"WebSocket broadcast error: {e}")
+        print(f"❌ WebSocket broadcast error: {e}")
+        import traceback
+        traceback.print_exc()
 
     return {
         "product_id": str(new_product.id),
@@ -262,7 +274,7 @@ async def activate_session(
         )
 
     session.is_active = True
-    session.updated_at = datetime.utcnow()
+    session.updated_at = datetime.now()
 
     await db.commit()
 
@@ -270,7 +282,7 @@ async def activate_session(
     try:
         from app.api.websocket import broadcast_session_list_update
 
-        await broadcast_session_list_update(db)
+        await broadcast_session_list_update()
     except Exception as e:
         print(f"WebSocket broadcast error: {e}")
 
@@ -296,7 +308,7 @@ async def deactivate_session(
         )
 
     session.is_active = False
-    session.updated_at = datetime.utcnow()
+    session.updated_at = datetime.now()
 
     await db.commit()
 
@@ -304,7 +316,7 @@ async def deactivate_session(
     try:
         from app.api.websocket import broadcast_session_list_update
 
-        await broadcast_session_list_update(db)
+        await broadcast_session_list_update()
     except Exception as e:
         print(f"WebSocket broadcast error: {e}")
 
