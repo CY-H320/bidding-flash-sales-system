@@ -29,6 +29,11 @@ const BiddingSystemUI = () => {
   const [adminProducts, setAdminProducts] = useState([]);
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [leaderboard, setLeaderboard] = useState([]);
+  const [highestBid, setHighestBid] = useState(null);
+  const [thresholdScore, setThresholdScore] = useState(null);
+  const [leaderboardPage, setLeaderboardPage] = useState(1);
+  const [leaderboardTotalPages, setLeaderboardTotalPages] = useState(0);
+  const [leaderboardTotalCount, setLeaderboardTotalCount] = useState(0);
   const [bidAmount, setBidAmount] = useState('');
   const [message, setMessage] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
@@ -198,6 +203,8 @@ const BiddingSystemUI = () => {
             const message = JSON.parse(event.data);
             if (message.type === 'leaderboard_update' && message.data) {
               setLeaderboard(message.data.leaderboard || []);
+              setHighestBid(message.data.highest_bid);
+              setThresholdScore(message.data.threshold_score);
             }
           } catch (error) {
             console.error('Error parsing WebSocket message:', error);
@@ -330,13 +337,24 @@ const BiddingSystemUI = () => {
     }
   };
 
-  const loadLeaderboard = async (sessionId) => {
+  const loadLeaderboard = async (sessionId, page = 1) => {
     try {
-      const response = await fetch(`${API_BASE}/leaderboard/${sessionId}`);
+      const response = await fetch(`${API_BASE}/leaderboard/${sessionId}?page=${page}&page_size=50`);
       const data = await response.json();
       setLeaderboard(data.leaderboard || []);
+      setHighestBid(data.highest_bid);
+      setThresholdScore(data.threshold_score);
+      setLeaderboardPage(data.page);
+      setLeaderboardTotalPages(data.total_pages);
+      setLeaderboardTotalCount(data.total_count);
     } catch (error) {
       console.error('Failed to load leaderboard:', error);
+    }
+  };
+
+  const handleLeaderboardPageChange = (newPage) => {
+    if (selectedProduct) {
+      loadLeaderboard(selectedProduct.session_id, newPage);
     }
   };
 
@@ -507,9 +525,15 @@ const BiddingSystemUI = () => {
             selectedProduct={selectedProduct}
             setSelectedProduct={setSelectedProduct}
             leaderboard={leaderboard}
+            highestBid={highestBid}
+            thresholdScore={thresholdScore}
+            leaderboardPage={leaderboardPage}
+            leaderboardTotalPages={leaderboardTotalPages}
+            leaderboardTotalCount={leaderboardTotalCount}
             bidAmount={bidAmount}
             setBidAmount={setBidAmount}
             onBid={handleBid}
+            onLeaderboardPageChange={handleLeaderboardPageChange}
             userWeight={user.weight}
             wsConnected={wsConnected}
             sessionWsRef={sessionWsRef}
@@ -759,36 +783,124 @@ const SessionList = ({ sessions, selectedId, onSelect, variant = 'compact', isAd
 };
 
 
-const LeaderboardList = ({ leaderboard }) => {
+const LeaderboardList = ({ leaderboard, highestBid, thresholdScore, currentPage, totalPages, totalCount, onPageChange }) => {
   if (!leaderboard || leaderboard.length === 0) {
     return <p className="empty-state">No bids yet. Be the first!</p>;
   }
+
+  const handlePrevPage = () => {
+    if (currentPage > 1) {
+      onPageChange(currentPage - 1);
+    }
+  };
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      onPageChange(currentPage + 1);
+    }
+  };
+
   return (
-    <div className="leaderboard">
-      {leaderboard.map((entry, index) => (
-        <div
-          key={entry.user_id}
-          className={`leaderboard-item ${entry.is_winner ? 'winner' : ''}`}
-        >
-          <div className="leaderboard-left">
-            <div className={`rank-badge rank-${entry.rank}`}>
-              {entry.rank}
-            </div>
-            <div className="user-details">
-              <div className="username">{entry.username}</div>
-              <div className="score">Score: {entry.score?.toFixed(2)} | Price: ${entry.price}</div>
-            </div>
+    <div>
+      {/* Summary stats */}
+      <div style={{
+        display: 'flex',
+        gap: '12px',
+        marginBottom: '16px',
+        padding: '12px',
+        backgroundColor: '#f8f9fa',
+        borderRadius: '8px'
+      }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: '12px', color: '#666', marginBottom: '4px' }}>Highest Bid</div>
+          <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#2196f3' }}>
+            {highestBid !== null && highestBid !== undefined ? `$${highestBid.toFixed(2)}` : 'N/A'}
           </div>
-          {entry.is_winner && (
-            <span className="winner-badge">Winner 🎉</span>
-          )}
         </div>
-      ))}
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: '12px', color: '#666', marginBottom: '4px' }}>Threshold Score</div>
+          <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#ff9800' }}>
+            {thresholdScore !== null && thresholdScore !== undefined ? thresholdScore.toFixed(2) : 'N/A'}
+          </div>
+        </div>
+      </div>
+      
+      {/* Leaderboard list */}
+      <div className="leaderboard">
+        {leaderboard.map((entry, index) => (
+          <div
+            key={entry.user_id}
+            className={`leaderboard-item ${entry.is_winner ? 'winner' : ''}`}
+          >
+            <div className="leaderboard-left">
+              <div className={`rank-badge rank-${entry.rank}`}>
+                {entry.rank}
+              </div>
+              <div className="user-details">
+                <div className="username">{entry.username}</div>
+                <div className="score">Score: {entry.score?.toFixed(2)} | Price: ${entry.price}</div>
+              </div>
+            </div>
+            {entry.is_winner && (
+              <span className="winner-badge">Winner 🎉</span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Pagination controls */}
+      {totalPages > 1 && (
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginTop: '16px',
+          padding: '12px',
+          backgroundColor: '#f8f9fa',
+          borderRadius: '8px'
+        }}>
+          <button
+            onClick={handlePrevPage}
+            disabled={currentPage <= 1}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: currentPage <= 1 ? '#ccc' : '#2196f3',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: currentPage <= 1 ? 'not-allowed' : 'pointer',
+              fontSize: '14px',
+              fontWeight: 'bold'
+            }}
+          >
+            ← Previous
+          </button>
+          <div style={{ fontSize: '14px', color: '#666', fontWeight: 'bold' }}>
+            Page {currentPage} of {totalPages} ({totalCount} total bidders)
+          </div>
+          <button
+            onClick={handleNextPage}
+            disabled={currentPage >= totalPages}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: currentPage >= totalPages ? '#ccc' : '#2196f3',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: currentPage >= totalPages ? 'not-allowed' : 'pointer',
+              fontSize: '14px',
+              fontWeight: 'bold'
+            }}
+          >
+            Next →
+          </button>
+        </div>
+      )}
     </div>
   );
 };
 
-const UserView = ({ products, selectedProduct, setSelectedProduct, leaderboard, bidAmount, setBidAmount, onBid, userWeight, wsConnected, sessionWsRef }) => {
+const UserView = ({ products, selectedProduct, setSelectedProduct, leaderboard, highestBid, thresholdScore, leaderboardPage, leaderboardTotalPages, leaderboardTotalCount, bidAmount, setBidAmount, onBid, onLeaderboardPageChange, userWeight, wsConnected, sessionWsRef }) => {
   const activeProducts = products.filter(p => !p.isEnded);
   const endedProducts = products.filter(p => p.isEnded);
 
@@ -905,7 +1017,15 @@ const UserView = ({ products, selectedProduct, setSelectedProduct, leaderboard, 
                   </span>
                 )}
               </div>
-              <LeaderboardList leaderboard={leaderboard} />
+              <LeaderboardList 
+                leaderboard={leaderboard}
+                highestBid={highestBid}
+                thresholdScore={thresholdScore}
+                currentPage={leaderboardPage}
+                totalPages={leaderboardTotalPages}
+                totalCount={leaderboardTotalCount}
+                onPageChange={onLeaderboardPageChange}
+              />
             </div>
           </>
         ) : (

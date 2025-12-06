@@ -47,8 +47,8 @@ async def create_product(
         name=product_data.name,
         description=product_data.description,
         admin_id=current_user.id,
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
     db.add(new_product)
@@ -121,8 +121,8 @@ async def create_session(
             status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
         )
 
-    # Create session using local time
-    start_time = datetime.now()
+    # Create session using UTC time
+    start_time = datetime.now(timezone.utc)
     end_time = start_time + timedelta(minutes=session_data.duration_minutes)
 
     new_session = BiddingSession(
@@ -138,8 +138,8 @@ async def create_session(
         end_time=end_time,
         duration=timedelta(minutes=session_data.duration_minutes),
         is_active=True,
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
     db.add(new_session)
@@ -156,6 +156,7 @@ async def create_session(
     except Exception as e:
         print(f"❌ WebSocket broadcast error: {e}")
         import traceback
+
         traceback.print_exc()
 
     return {
@@ -198,18 +199,18 @@ async def create_product_and_session(
         name=combined_data.name,
         description=combined_data.description,
         admin_id=current_user.id,
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
     db.add(new_product)
     await db.flush()  # Get the product ID
 
-    # Create session using local time
-    start_time = datetime.now()
+    # Create session using UTC time
+    start_time = datetime.now(timezone.utc)
     end_time = start_time + timedelta(minutes=combined_data.duration_minutes)
 
-    print(f"🕒 Creating session with times:")
+    print("🕒 Creating session with times:")
     print(f"   start_time: {start_time}")
     print(f"   end_time: {end_time}")
 
@@ -226,8 +227,8 @@ async def create_product_and_session(
         end_time=end_time,
         duration=timedelta(minutes=combined_data.duration_minutes),
         is_active=True,
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
     db.add(new_session)
@@ -243,6 +244,7 @@ async def create_product_and_session(
     except Exception as e:
         print(f"❌ WebSocket broadcast error: {e}")
         import traceback
+
         traceback.print_exc()
 
     return {

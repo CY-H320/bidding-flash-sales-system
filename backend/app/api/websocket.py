@@ -200,7 +200,22 @@ async def get_leaderboard_data(
             }
         )
 
-    return {"session_id": session_id, "leaderboard": leaderboard}
+    # Calculate highest bid and threshold score
+    highest_bid = (
+        max([entry["price"] for entry in leaderboard]) if leaderboard else None
+    )
+    # If fewer bidders than inventory, use the last bidder's score as threshold
+    if len(leaderboard) < inventory:
+        threshold_score = leaderboard[-1]["score"] if leaderboard else None
+    else:
+        threshold_score = leaderboard[inventory - 1]["score"]
+
+    return {
+        "session_id": session_id,
+        "leaderboard": leaderboard,
+        "highest_bid": highest_bid,
+        "threshold_score": threshold_score,
+    }
 
 
 async def broadcast_leaderboard_update(session_id: str, redis: Redis, db: AsyncSession):
@@ -217,8 +232,8 @@ async def broadcast_leaderboard_update(session_id: str, redis: Redis, db: AsyncS
 async def get_all_sessions(db: AsyncSession):
     """Fetch all sessions with correct status"""
     try:
-        # Use naive datetime to match what's in the database
-        now = datetime.now()
+        # Use UTC time for comparison
+        now = datetime.now(timezone.utc)
 
         result = await db.execute(
             select(
@@ -240,10 +255,10 @@ async def get_all_sessions(db: AsyncSession):
         sessions = []
         for row in result:
             # Determine status based on is_active flag and end_time
-            # Strip timezone info if present to compare apples to apples
+            # Ensure timezone-aware for comparison
             end_time = row.end_time
-            if end_time.tzinfo is not None:
-                end_time = end_time.replace(tzinfo=None)
+            if end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=timezone.utc)
             is_ended = not row.is_active or now > end_time
 
             sessions.append(

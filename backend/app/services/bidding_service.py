@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from app.core.config import settings
-from app.models.bid import BiddingSession
+from app.models.bid import BiddingSession, BiddingSessionBid, BiddingSessionRanking
 from app.models.user import User
 from redis.asyncio import Redis
 from sqlalchemy import select
@@ -25,14 +25,14 @@ async def check_session_active(
             start_time = datetime.fromisoformat(cached["start_time"])
             end_time = datetime.fromisoformat(cached["end_time"])
 
-            # Strip timezone info to match database approach
-            if start_time.tzinfo is not None:
-                start_time = start_time.replace(tzinfo=None)
-            if end_time.tzinfo is not None:
-                end_time = end_time.replace(tzinfo=None)
+            # Ensure both are timezone-aware UTC
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+            if end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=timezone.utc)
 
-            # Use naive local time for comparison
-            now = datetime.now()
+            # Use UTC time for comparison
+            now = datetime.now(timezone.utc)
 
             print(f"⏰ [CACHE] Time check for session {session_id}:")
             print(f"   Now:   {now}")
@@ -61,31 +61,27 @@ async def check_session_active(
 
     start_time, end_time, is_active = row
 
-    print(f"🔍 DB row values: start_time={start_time} (tzinfo={start_time.tzinfo}), end_time={end_time} (tzinfo={end_time.tzinfo}), is_active={is_active}")
+    print(
+        f"🔍 DB row values: start_time={start_time} (tzinfo={start_time.tzinfo}), end_time={end_time} (tzinfo={end_time.tzinfo}), is_active={is_active}"
+    )
 
     if not is_active:
         return False, "Bidding session is not active"
 
-    # Handle timezone-aware vs naive datetimes
-    # If times from DB are naive, compare with naive local time
-    # If times from DB are aware, compare with aware UTC time
-    if start_time.tzinfo is None and end_time.tzinfo is None:
-        print(f"⚠️  Times are timezone-naive, using local time for comparison")
-        now = datetime.now()  # Use naive local time to match DB
-    else:
-        print(f"✓ Times are timezone-aware, using UTC for comparison")
-        # Make timezone-aware if needed
-        if start_time.tzinfo is None:
-            start_time = start_time.replace(tzinfo=timezone.utc)
-        if end_time.tzinfo is None:
-            end_time = end_time.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
+    # Ensure both times are timezone-aware UTC
+    if start_time.tzinfo is None:
+        start_time = start_time.replace(tzinfo=timezone.utc)
+    if end_time.tzinfo is None:
+        end_time = end_time.replace(tzinfo=timezone.utc)
+
+    # Always use UTC for comparison
+    now = datetime.now(timezone.utc)
 
     # Debug logging
     print(f"⏰ Time check for session {session_id}:")
-    print(f"   Now:        {now} ({now.tzinfo if hasattr(now, 'tzinfo') else 'naive'})")
-    print(f"   Start:      {start_time} ({start_time.tzinfo if hasattr(start_time, 'tzinfo') else 'naive'})")
-    print(f"   End:        {end_time} ({end_time.tzinfo if hasattr(end_time, 'tzinfo') else 'naive'})")
+    print(f"   Now:        {now}")
+    print(f"   Start:      {start_time}")
+    print(f"   End:        {end_time}")
     print(f"   Now < Start: {now < start_time}")
     print(f"   Now > End:   {now > end_time}")
 
@@ -191,8 +187,8 @@ async def process_new_bid(
     db: AsyncSession,
 ) -> dict:
     """Process a new bid: calculate score and store in Redis ZSET."""
-    # Use naive local time to match session times
-    bid_timestamp = datetime.now()
+    # Use UTC time for consistency
+    bid_timestamp = datetime.now(timezone.utc)
 
     # Fetch session parameters and user weight in parallel
     (alpha, beta, gamma, start_time), weight = await asyncio.gather(
@@ -200,9 +196,9 @@ async def process_new_bid(
         get_user_weight_from_cache(redis, user_id, db),
     )
 
-    # Ensure both timestamps are naive for subtraction
-    if start_time.tzinfo is not None:
-        start_time = start_time.replace(tzinfo=None)
+    # Ensure both timestamps are timezone-aware UTC for subtraction
+    if start_time.tzinfo is None:
+        start_time = start_time.replace(tzinfo=timezone.utc)
 
     response_time = (bid_timestamp - start_time).total_seconds()
 
@@ -241,4 +237,90 @@ async def process_new_bid(
         "rank": rank,
         "response_time": response_time,
         "timestamp": bid_timestamp.isoformat(),
+    }
+
+
+async def finalize_session_results(
+    session_id: UUID,
+    redis: Redis,
+    db: AsyncSession,
+) -> dict:
+    """
+    Finalize session results when bidding ends.
+    - Calculates final price based on inventory
+    - Saves final rankings and winners to database
+    - Updates session.final_price
+    """
+    # Get session details
+    result = await db.execute(
+        select(BiddingSession).where(BiddingSession.id == session_id)
+    )
+    session = result.scalar_one_or_none()
+
+    if not session:
+        return {"status": "error", "message": "Session not found"}
+
+    inventory = session.inventory
+
+    # Get all bids from database sorted by score (descending)
+    bid_result = await db.execute(
+        select(BiddingSessionBid).where(BiddingSessionBid.session_id == session_id)
+    )
+    all_bids = bid_result.scalars().all()
+
+    # Sort by score descending
+    sorted_bids = sorted(all_bids, key=lambda b: b.bid_score, reverse=True)
+
+    # Determine winners and final price
+    final_price = None
+    if sorted_bids:
+        # Final price is the Kth (inventory) bid's price
+        # If fewer bids than inventory, use the lowest bid price
+        if len(sorted_bids) >= inventory:
+            final_price = sorted_bids[inventory - 1].bid_price
+        else:
+            final_price = sorted_bids[-1].bid_price
+
+    # Clear old rankings for this session (if any)
+    delete_result = await db.execute(
+        select(BiddingSessionRanking).where(
+            BiddingSessionRanking.session_id == session_id
+        )
+    )
+    for ranking in delete_result.scalars().all():
+        await db.delete(ranking)
+
+    # Create final ranking records
+    now = datetime.now(timezone.utc)
+    winners_count = 0
+
+    for rank, bid in enumerate(sorted_bids, start=1):
+        is_winner = rank <= inventory
+        if is_winner:
+            winners_count += 1
+
+        ranking_record = BiddingSessionRanking(
+            session_id=session_id,
+            user_id=bid.user_id,
+            ranking=rank,
+            bid_price=bid.bid_price,
+            bid_score=bid.bid_score,
+            is_winner=is_winner,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(ranking_record)
+
+    # Update session with final price
+    session.final_price = final_price
+    session.updated_at = now
+
+    await db.commit()
+
+    return {
+        "status": "success",
+        "final_price": final_price,
+        "total_bidders": len(sorted_bids),
+        "winners_count": winners_count,
+        "rankings_saved": len(sorted_bids),
     }

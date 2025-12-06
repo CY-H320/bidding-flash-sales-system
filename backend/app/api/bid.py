@@ -46,7 +46,9 @@ async def submit_bid(
 ):
     """Submit or update a bid"""
 
-    print(f"📥 Bid received: user={current_user.username}, session={bid_data.session_id}, price={bid_data.price}")
+    print(
+        f"📥 Bid received: user={current_user.username}, session={bid_data.session_id}, price={bid_data.price}"
+    )
 
     # Check if session is active
     is_active, error_message = await check_session_active(
@@ -101,15 +103,15 @@ async def submit_bid(
         if existing_bid:
             existing_bid.bid_price = bid_data.price
             existing_bid.bid_score = result["score"]
-            existing_bid.updated_at = datetime.now()
+            existing_bid.updated_at = datetime.now(timezone.utc)
         else:
             new_bid = BiddingSessionBid(
                 session_id=bid_data.session_id,
                 user_id=current_user.id,
                 bid_price=bid_data.price,
                 bid_score=result["score"],
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
             )
             db.add(new_bid)
 
@@ -134,6 +136,7 @@ async def submit_bid(
         await db.rollback()
         print(f"❌ Bid processing error: {e}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
@@ -143,29 +146,55 @@ async def submit_bid(
 @router.get("/leaderboard/{session_id}", response_model=LeaderboardResponse)
 async def get_leaderboard(
     session_id: UUID,
-    limit: int = 10,
+    page: int = 1,
+    page_size: int = 50,
     redis: Redis = Depends(get_redis),
     db: AsyncSession = Depends(get_async_db),
 ):
-    """Get leaderboard from Redis"""
+    """Get leaderboard from Redis with pagination (50 per page)"""
+
+    # Validate page parameters
+    if page < 1:
+        page = 1
+    if page_size < 1 or page_size > 100:
+        page_size = 50
 
     ranking_key = f"ranking:{session_id}"
 
-    top_bidders = await redis.zrevrange(ranking_key, 0, limit - 1, withscores=True)
+    # Get total count of bidders
+    total_count = await redis.zcard(ranking_key)
 
-    if not top_bidders:
+    if total_count == 0:
         # Fallback to DB if Redis is empty
+        count_result = await db.execute(
+            select(BiddingSessionBid).where(BiddingSessionBid.session_id == session_id)
+        )
+        total_count = len(count_result.all())
+
+        if total_count == 0:
+            total_pages = 1
+            return LeaderboardResponse(
+                session_id=str(session_id),
+                leaderboard=[],
+                highest_bid=None,
+                threshold_score=None,
+                page=page,
+                page_size=page_size,
+                total_count=0,
+                total_pages=0,
+            )
+
+        # Calculate pagination from DB
+        offset = (page - 1) * page_size
         result = await db.execute(
             select(BiddingSessionBid, User.username)
             .join(User, BiddingSessionBid.user_id == User.id)
             .where(BiddingSessionBid.session_id == session_id)
             .order_by(BiddingSessionBid.bid_score.desc())
-            .limit(limit)
+            .offset(offset)
+            .limit(page_size)
         )
         rows = result.all()
-
-        if not rows:
-            return LeaderboardResponse(session_id=str(session_id), leaderboard=[])
 
         # Get inventory for winner calculation
         inv_result = await db.execute(
@@ -174,7 +203,7 @@ async def get_leaderboard(
         inventory = inv_result.scalar_one_or_none() or 0
 
         leaderboard = []
-        for rank, (bid, username) in enumerate(rows, start=1):
+        for rank, (bid, username) in enumerate(rows, start=offset + 1):
             leaderboard.append(
                 LeaderboardEntry(
                     user_id=str(bid.user_id),
@@ -185,7 +214,39 @@ async def get_leaderboard(
                     is_winner=(rank <= inventory),
                 )
             )
-        return LeaderboardResponse(session_id=str(session_id), leaderboard=leaderboard)
+
+        # Calculate highest bid and threshold score (always from all bidders, not just page)
+        all_bids_result = await db.execute(
+            select(BiddingSessionBid)
+            .where(BiddingSessionBid.session_id == session_id)
+            .order_by(BiddingSessionBid.bid_score.desc())
+        )
+        all_bids = all_bids_result.scalars().all()
+        highest_bid = max([bid.bid_price for bid in all_bids]) if all_bids else None
+        if len(all_bids) < inventory:
+            threshold_score = all_bids[-1].bid_score if all_bids else None
+        else:
+            threshold_score = all_bids[inventory - 1].bid_score
+
+        total_pages = (total_count + page_size - 1) // page_size
+
+        return LeaderboardResponse(
+            session_id=str(session_id),
+            leaderboard=leaderboard,
+            highest_bid=highest_bid,
+            threshold_score=round(threshold_score, 2) if threshold_score else None,
+            page=page,
+            page_size=page_size,
+            total_count=total_count,
+            total_pages=total_pages,
+        )
+
+    # Use Redis for pagination
+    # Calculate offset and fetch data for this page
+    offset = (page - 1) * page_size
+    top_bidders = await redis.zrevrange(
+        ranking_key, offset, offset + page_size - 1, withscores=True
+    )
 
     result = await db.execute(
         select(BiddingSession.inventory).where(BiddingSession.id == session_id)
@@ -199,7 +260,7 @@ async def get_leaderboard(
 
     leaderboard = []
 
-    for rank, (user_id_str, score) in enumerate(top_bidders, start=1):
+    for rank, (user_id_str, score) in enumerate(top_bidders, start=offset + 1):
         user_id = UUID(user_id_str)
 
         user_result = await db.execute(select(User.username).where(User.id == user_id))
@@ -221,7 +282,37 @@ async def get_leaderboard(
             )
         )
 
-    return LeaderboardResponse(session_id=str(session_id), leaderboard=leaderboard)
+    # Calculate highest bid and threshold score (from full ranking, not just page)
+    # Get top entries to find highest bid and threshold
+    all_top_bidders = await redis.zrevrange(ranking_key, 0, -1, withscores=True)
+    highest_bid = None
+    threshold_score = None
+
+    if all_top_bidders:
+        highest_bid_entry = all_top_bidders[0]
+        user_id_str = highest_bid_entry[0]
+        bid_key = f"bid:{session_id}:{user_id_str}"
+        bid_data = await redis.hgetall(bid_key)
+        highest_bid = float(bid_data.get("price", 0)) if bid_data else None
+
+        # Threshold score: if fewer bidders than inventory, use last bidder; else use Kth
+        if len(all_top_bidders) < inventory:
+            threshold_score = all_top_bidders[-1][1]
+        else:
+            threshold_score = all_top_bidders[inventory - 1][1]
+
+    total_pages = (total_count + page_size - 1) // page_size
+
+    return LeaderboardResponse(
+        session_id=str(session_id),
+        leaderboard=leaderboard,
+        highest_bid=highest_bid,
+        threshold_score=round(threshold_score, 2) if threshold_score else None,
+        page=page,
+        page_size=page_size,
+        total_count=total_count,
+        total_pages=total_pages,
+    )
 
 
 @router.get("/sessions")
@@ -250,15 +341,15 @@ async def get_all_sessions_endpoint(
     )
 
     sessions = []
-    # Use naive datetime to match what's in the database
-    now = datetime.now()
+    # Use UTC datetime for comparison
+    now = datetime.now(timezone.utc)
 
     for row in result:
         # Determine status based on is_active flag and end_time
-        # Strip timezone info if present to compare apples to apples
+        # Ensure timezone-aware for comparison
         end_time = row.end_time
-        if end_time.tzinfo is not None:
-            end_time = end_time.replace(tzinfo=None)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
         is_ended = not row.is_active or now > end_time
 
         sessions.append(
@@ -327,3 +418,72 @@ async def get_active_sessions(
         )
 
     return sessions
+
+
+@router.get("/results/{session_id}")
+async def get_session_results(
+    session_id: UUID,
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Get final results for a completed session"""
+    from app.models.bid import BiddingSessionRanking
+
+    # Get session info
+    result = await db.execute(
+        select(BiddingSession).where(BiddingSession.id == session_id)
+    )
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+        )
+
+    # Get all rankings for this session
+    ranking_result = await db.execute(
+        select(BiddingSessionRanking)
+        .where(BiddingSessionRanking.session_id == session_id)
+        .order_by(BiddingSessionRanking.ranking)
+    )
+    rankings = ranking_result.scalars().all()
+
+    # Get user information for each ranking
+    winners = []
+    for ranking in rankings:
+        user_result = await db.execute(select(User).where(User.id == ranking.user_id))
+        user = user_result.scalar_one_or_none()
+
+        entry = {
+            "rank": ranking.ranking,
+            "user_id": str(ranking.user_id),
+            "username": user.username if user else "Unknown",
+            "bid_price": ranking.bid_price,
+            "bid_score": ranking.bid_score,
+            "is_winner": ranking.is_winner,
+        }
+
+        if ranking.is_winner:
+            winners.append(entry)
+
+    return {
+        "session_id": str(session.id),
+        "product_id": str(session.product_id),
+        "inventory": session.inventory,
+        "final_price": session.final_price,
+        "is_active": session.is_active,
+        "start_time": session.start_time.isoformat(),
+        "end_time": session.end_time.isoformat(),
+        "total_bidders": len(rankings),
+        "total_winners": len(winners),
+        "winners": winners,
+        "all_rankings": [
+            {
+                "rank": r.ranking,
+                "user_id": str(r.user_id),
+                "bid_price": r.bid_price,
+                "bid_score": r.bid_score,
+                "is_winner": r.is_winner,
+            }
+            for r in rankings
+        ],
+    }

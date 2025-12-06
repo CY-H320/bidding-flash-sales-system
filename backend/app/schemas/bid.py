@@ -1,32 +1,35 @@
 # app/schemas/bid.py
-from pydantic import BaseModel, Field
+from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
+
+from pydantic import BaseModel, Field
 
 
 class BidCreate(BaseModel):
     """Request schema for submitting a bid"""
+
     session_id: UUID = Field(..., description="Bidding session ID")
     price: float = Field(..., gt=0, description="Bid price (must be positive)")
-    
+
     class Config:
         json_schema_extra = {
             "example": {
                 "session_id": "123e4567-e89b-12d3-a456-426614174000",
-                "price": 250.0
+                "price": 250.0,
             }
         }
 
 
 class BidResponse(BaseModel):
     """Response schema after submitting a bid"""
+
     status: str = Field(..., description="Bid status (accepted/rejected)")
     score: float = Field(..., description="Calculated bid score")
     rank: Optional[int] = Field(None, description="Current rank in leaderboard")
     current_price: float = Field(..., description="Bid price")
     message: str = Field(..., description="Response message")
-    
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -34,20 +37,21 @@ class BidResponse(BaseModel):
                 "score": 1125.50,
                 "rank": 3,
                 "current_price": 250.0,
-                "message": "Bid submitted successfully"
+                "message": "Bid submitted successfully",
             }
         }
 
 
 class LeaderboardEntry(BaseModel):
     """Single entry in the leaderboard"""
+
     user_id: str = Field(..., description="User UUID")
     username: str = Field(..., description="Username")
     price: float = Field(..., description="Bid price")
     score: float = Field(..., description="Bid score")
     rank: int = Field(..., description="Current rank (1 = first place)")
     is_winner: bool = Field(..., description="Whether user is in top K (winners)")
-    
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -56,16 +60,29 @@ class LeaderboardEntry(BaseModel):
                 "price": 350.0,
                 "score": 1177.40,
                 "rank": 1,
-                "is_winner": True
+                "is_winner": True,
             }
         }
 
 
 class LeaderboardResponse(BaseModel):
     """Response schema for leaderboard"""
+
     session_id: str = Field(..., description="Bidding session ID")
-    leaderboard: List[LeaderboardEntry] = Field(..., description="List of top bidders")
-    
+    leaderboard: List[LeaderboardEntry] = Field(
+        ..., description="List of bidders on current page"
+    )
+    highest_bid: Optional[float] = Field(
+        None, description="Highest bid price in current session"
+    )
+    threshold_score: Optional[float] = Field(
+        None, description="Minimum score to win (score of Kth bidder)"
+    )
+    page: int = Field(default=1, description="Current page number (1-indexed)")
+    page_size: int = Field(default=50, description="Number of entries per page")
+    total_count: int = Field(..., description="Total number of bidders in session")
+    total_pages: int = Field(..., description="Total number of pages")
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -77,15 +94,22 @@ class LeaderboardResponse(BaseModel):
                         "price": 350.0,
                         "score": 1177.40,
                         "rank": 1,
-                        "is_winner": True
+                        "is_winner": True,
                     }
-                ]
+                ],
+                "highest_bid": 350.0,
+                "threshold_score": 1050.25,
+                "page": 1,
+                "page_size": 50,
+                "total_count": 150,
+                "total_pages": 3,
             }
         }
 
 
 class SessionInfo(BaseModel):
     """Information about a bidding session"""
+
     session_id: UUID
     product_id: UUID
     name: str
@@ -98,7 +122,7 @@ class SessionInfo(BaseModel):
     start_time: datetime
     end_time: datetime
     status: str
-    
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -113,6 +137,6 @@ class SessionInfo(BaseModel):
                 "gamma": 2.0,
                 "start_time": "2024-12-02T10:00:00",
                 "end_time": "2024-12-02T11:00:00",
-                "status": "active"
+                "status": "active",
             }
         }

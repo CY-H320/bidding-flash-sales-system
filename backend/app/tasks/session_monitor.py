@@ -5,7 +5,9 @@ import asyncio
 from datetime import datetime, timezone
 
 from app.core.database import AsyncSessionLocal
+from app.core.redis import redis_client
 from app.models.bid import BiddingSession
+from app.services.bidding_service import finalize_session_results
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,7 +29,19 @@ async def check_and_update_session_status(db: AsyncSession) -> list[str]:
     )
     expired_sessions = result.scalars().all()
 
+    # Get Redis connection
+    redis = redis_client.get_client()
+
     for session in expired_sessions:
+        try:
+            # Finalize session results (calculate winners, final price, save rankings)
+            finalize_result = await finalize_session_results(
+                session_id=session.id, redis=redis, db=db
+            )
+            print(f"✓ Session {session.id} finalized: {finalize_result}")
+        except Exception as e:
+            print(f"❌ Error finalizing session {session.id}: {e}")
+
         session.is_active = False
         changed_sessions.append(str(session.id))
         print(f"✓ Session {session.id} automatically ended at {now}")
