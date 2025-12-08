@@ -5,14 +5,21 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
 
-# Create async engine
+# Create async engine with optimized connection pool for high concurrency
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.DEBUG,
+    echo=False,  # Disable SQL logging for performance
     future=True,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_pre_ping=True,  # Check connection health before use
+    pool_size=50,  # Increased from 10 to handle concurrent requests
+    max_overflow=100,  # Increased from 20 for burst traffic
+    pool_recycle=3600,  # Recycle connections every hour
+    connect_args={
+        "server_settings": {
+            "timezone": "UTC",  # Force PostgreSQL to use UTC timezone
+            "application_name": "bidding_system",
+        }
+    },
 )
 
 # Create non-blocking session factory

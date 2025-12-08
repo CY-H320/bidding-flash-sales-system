@@ -122,7 +122,8 @@ async def create_session(
         )
 
     # Create session using UTC time
-    start_time = datetime.now(timezone.utc)
+    # Start 1 minute in the past to avoid timezone conversion issues with PostgreSQL
+    start_time = datetime.now(timezone.utc) - timedelta(minutes=1)
     end_time = start_time + timedelta(minutes=session_data.duration_minutes)
 
     new_session = BiddingSession(
@@ -207,12 +208,14 @@ async def create_product_and_session(
     await db.flush()  # Get the product ID
 
     # Create session using UTC time
-    start_time = datetime.now(timezone.utc)
+    # Start 1 minute in the past to avoid timezone conversion issues with PostgreSQL
+    start_time = datetime.now(timezone.utc) - timedelta(minutes=1)
     end_time = start_time + timedelta(minutes=combined_data.duration_minutes)
 
     print("🕒 Creating session with times:")
-    print(f"   start_time: {start_time}")
-    print(f"   end_time: {end_time}")
+    print(f"   start_time: {start_time} (UTC)")
+    print(f"   end_time: {end_time} (UTC)")
+    print(f"   duration: {combined_data.duration_minutes} minutes")
 
     new_session = BiddingSession(
         id=uuid4(),
@@ -276,7 +279,7 @@ async def activate_session(
         )
 
     session.is_active = True
-    session.updated_at = datetime.now()
+    session.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
 
@@ -310,7 +313,7 @@ async def deactivate_session(
         )
 
     session.is_active = False
-    session.updated_at = datetime.now()
+    session.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
 

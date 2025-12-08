@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.dialects.postgresql import insert
 
 from app.api.auth import get_current_user
 
@@ -46,28 +47,32 @@ async def submit_bid(
 ):
     """Submit or update a bid"""
 
-    print(
-        f"📥 Bid received: user={current_user.username}, session={bid_data.session_id}, price={bid_data.price}"
-    )
-
     # Check if session is active
     is_active, error_message = await check_session_active(
         redis=redis, session_id=bid_data.session_id, db=db
     )
 
     if not is_active:
-        print(f"❌ Bid rejected: {error_message}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=error_message
         )
 
-    # Get upset_price
-    result = await db.execute(
-        select(BiddingSession.upset_price).where(
-            BiddingSession.id == bid_data.session_id
+    # Get upset_price from Redis cache (performance optimization)
+    cache_key = f"session:upset_price:{bid_data.session_id}"
+    cached_upset_price = await redis.get(cache_key)
+
+    if cached_upset_price:
+        upset_price = float(cached_upset_price)
+    else:
+        result = await db.execute(
+            select(BiddingSession.upset_price).where(
+                BiddingSession.id == bid_data.session_id
+            )
         )
-    )
-    upset_price = result.scalar_one_or_none()
+        upset_price = result.scalar_one_or_none()
+        if upset_price:
+            # Cache for 2 hours
+            await redis.set(cache_key, str(upset_price), ex=7200)
 
     if upset_price is None:
         raise HTTPException(
@@ -75,7 +80,6 @@ async def submit_bid(
         )
 
     if bid_data.price < upset_price:
-        print(f"❌ Bid rejected: price {bid_data.price} < upset_price {upset_price}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Bid must be at least ${upset_price}",
@@ -91,38 +95,35 @@ async def submit_bid(
             db=db,
         )
 
-        # Store in database
-        bid_result = await db.execute(
-            select(BiddingSessionBid).where(
-                BiddingSessionBid.session_id == bid_data.session_id,
-                BiddingSessionBid.user_id == current_user.id,
-            )
+        # Use PostgreSQL UPSERT to avoid race conditions
+        # This is atomic and handles concurrent bids safely
+        stmt = insert(BiddingSessionBid).values(
+            session_id=bid_data.session_id,
+            user_id=current_user.id,
+            bid_price=bid_data.price,
+            bid_score=result["score"],
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        ).on_conflict_do_update(
+            index_elements=['session_id', 'user_id'],
+            set_={
+                'bid_price': bid_data.price,
+                'bid_score': result["score"],
+                'updated_at': datetime.now(timezone.utc),
+            }
         )
-        existing_bid = bid_result.scalar_one_or_none()
 
-        if existing_bid:
-            existing_bid.bid_price = bid_data.price
-            existing_bid.bid_score = result["score"]
-            existing_bid.updated_at = datetime.now(timezone.utc)
-        else:
-            new_bid = BiddingSessionBid(
-                session_id=bid_data.session_id,
-                user_id=current_user.id,
-                bid_price=bid_data.price,
-                bid_score=result["score"],
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
-            )
-            db.add(new_bid)
-
+        await db.execute(stmt)
         await db.commit()
 
-        # Broadcast leaderboard update via WebSocket
-        if has_websocket:
-            try:
-                await broadcast_leaderboard_update(str(bid_data.session_id), redis, db)
-            except Exception as ws_error:
-                print(f"WebSocket broadcast error: {ws_error}")
+        # WebSocket broadcast DISABLED for performance
+        # Broadcasting on every bid causes leaderboard glitching
+        # Clients should poll leaderboard or use a background task
+        # if has_websocket:
+        #     try:
+        #         await broadcast_leaderboard_update(str(bid_data.session_id), redis, db)
+        #     except Exception as ws_error:
+        #         pass
 
         return BidResponse(
             status="accepted",
@@ -134,10 +135,6 @@ async def submit_bid(
 
     except Exception as e:
         await db.rollback()
-        print(f"❌ Bid processing error: {e}")
-        import traceback
-
-        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )

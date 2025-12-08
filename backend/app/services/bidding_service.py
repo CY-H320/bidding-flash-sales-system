@@ -16,39 +16,8 @@ async def check_session_active(
     db: AsyncSession,
 ) -> tuple[bool, str | None]:
     """Check if bidding session exists and is active."""
-    cache_key = f"session:params:{session_id}"
-
-    cached = await redis.hgetall(cache_key)
-
-    if cached and "start_time" in cached and "end_time" in cached:
-        try:
-            start_time = datetime.fromisoformat(cached["start_time"])
-            end_time = datetime.fromisoformat(cached["end_time"])
-
-            # Ensure both are timezone-aware UTC
-            if start_time.tzinfo is None:
-                start_time = start_time.replace(tzinfo=timezone.utc)
-            if end_time.tzinfo is None:
-                end_time = end_time.replace(tzinfo=timezone.utc)
-
-            # Use UTC time for comparison
-            now = datetime.now(timezone.utc)
-
-            print(f"⏰ [CACHE] Time check for session {session_id}:")
-            print(f"   Now:   {now}")
-            print(f"   Start: {start_time}")
-            print(f"   End:   {end_time}")
-
-            if now < start_time:
-                return False, "Bidding session has not started yet"
-            elif now > end_time:
-                return False, "Bidding session has ended"
-            else:
-                return True, None
-
-        except (KeyError, ValueError):
-            pass
-
+    # Always query database for fresh data to avoid timezone issues with Redis cache
+    # Redis cache can have stale or incorrectly serialized timezone data
     result = await db.execute(
         select(
             BiddingSession.start_time, BiddingSession.end_time, BiddingSession.is_active
@@ -60,10 +29,6 @@ async def check_session_active(
         return False, "Bidding session not found"
 
     start_time, end_time, is_active = row
-
-    print(
-        f"🔍 DB row values: start_time={start_time} (tzinfo={start_time.tzinfo}), end_time={end_time} (tzinfo={end_time.tzinfo}), is_active={is_active}"
-    )
 
     if not is_active:
         return False, "Bidding session is not active"
@@ -77,13 +42,13 @@ async def check_session_active(
     # Always use UTC for comparison
     now = datetime.now(timezone.utc)
 
-    # Debug logging
-    print(f"⏰ Time check for session {session_id}:")
-    print(f"   Now:        {now}")
-    print(f"   Start:      {start_time}")
-    print(f"   End:        {end_time}")
-    print(f"   Now < Start: {now < start_time}")
-    print(f"   Now > End:   {now > end_time}")
+    # Debug logging for timezone issues
+    print(f"🕒 Timezone check for session {session_id}:")
+    print(f"   now (UTC): {now} (tzinfo: {now.tzinfo})")
+    print(f"   start_time: {start_time} (tzinfo: {start_time.tzinfo})")
+    print(f"   end_time: {end_time} (tzinfo: {end_time.tzinfo})")
+    print(f"   now < start_time? {now < start_time}")
+    print(f"   now > end_time? {now > end_time}")
 
     if now < start_time:
         return False, "Bidding session has not started yet"

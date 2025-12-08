@@ -183,60 +183,31 @@ const BiddingSystemUI = () => {
     return () => clearInterval(intervalId);
   }, [products, selectedProduct]);
 
+  // Leaderboard polling - updates every 2 seconds for active sessions
   useEffect(() => {
     if (user && selectedProduct) {
-      // Load initial leaderboard
+      // Load initial leaderboard immediately
       loadLeaderboard(selectedProduct.session_id);
 
-      // Only set up WebSocket connection for active sessions
+      // For active sessions, poll every 2 seconds
       if (!selectedProduct.isEnded) {
-        const ws = new WebSocket(`ws://localhost:8000/ws/${selectedProduct.session_id}`);
-        wsRef.current = ws;
+        console.log(`Starting leaderboard polling for session ${selectedProduct.session_id}`);
+        setWsConnected(true); // Indicate polling is active
 
-        ws.onopen = () => {
-          console.log(`WebSocket connected to session ${selectedProduct.session_id}`);
-          setWsConnected(true);
-        };
-
-        ws.onmessage = (event) => {
-          try {
-            const message = JSON.parse(event.data);
-            if (message.type === 'leaderboard_update' && message.data) {
-              setLeaderboard(message.data.leaderboard || []);
-              setHighestBid(message.data.highest_bid);
-              setThresholdScore(message.data.threshold_score);
-            }
-          } catch (error) {
-            console.error('Error parsing WebSocket message:', error);
-          }
-        };
-
-        ws.onerror = (error) => {
-          console.error('WebSocket error:', error);
-          setWsConnected(false);
-          // Fallback to polling if WebSocket fails
-          const intervalId = setInterval(() => {
-            loadLeaderboard(selectedProduct.session_id);
-          }, 3000);
-          return () => clearInterval(intervalId);
-        };
-
-        ws.onclose = () => {
-          console.log('WebSocket disconnected');
-          setWsConnected(false);
-        };
+        const pollInterval = setInterval(() => {
+          loadLeaderboard(selectedProduct.session_id);
+        }, 2000); // Poll every 2 seconds
 
         // Cleanup on component unmount or product change
         return () => {
-          if (wsRef.current) {
-            wsRef.current.close();
-            wsRef.current = null;
-          }
+          console.log('Stopping leaderboard polling');
+          clearInterval(pollInterval);
+          setWsConnected(false);
         };
       } else {
-        // For ended sessions, just show the final leaderboard without WebSocket
+        // For ended sessions, just show the final leaderboard (no polling)
         setWsConnected(false);
-        console.log('Session ended, showing final leaderboard without WebSocket');
+        console.log('Session ended, showing final leaderboard (no polling)');
       }
     }
   }, [user, selectedProduct]);
