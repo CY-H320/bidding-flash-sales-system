@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { AlertCircle, TrendingUp, Clock, Users, Package, Settings, LogOut, Award, List, Plus, X } from 'lucide-react';
 import './App.css';
 
-const API_BASE = 'http://localhost:8000/api';
-const WS_URL = 'ws://localhost:8000/ws'; // WebSocket endpoint (for future implementation)
+// Dynamic API base URL - use current domain's /api path
+const API_BASE = `${window.location.protocol}//${window.location.host}/api`;
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
 
 const Modal = ({ isOpen, onClose, title, children }) => {
   if (!isOpen) return null;
