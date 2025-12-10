@@ -253,13 +253,24 @@ async def get_leaderboard(
             status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
         )
 
+    # ✅ FIX: Fetch all usernames in a single query (eliminates N+1 problem)
+    user_ids = [UUID(user_id_str) for user_id_str, _ in top_bidders]
+
+    if user_ids:
+        user_result = await db.execute(
+            select(User.id, User.username).where(User.id.in_(user_ids))
+        )
+        user_map = {row.id: row.username for row in user_result}
+    else:
+        user_map = {}
+
     leaderboard = []
 
     for rank, (user_id_str, score) in enumerate(top_bidders, start=offset + 1):
         user_id = UUID(user_id_str)
 
-        user_result = await db.execute(select(User.username).where(User.id == user_id))
-        username = user_result.scalar_one_or_none()
+        # ✅ Get username from pre-fetched map instead of individual query
+        username = user_map.get(user_id, f"User {user_id}")
 
         bid_key = f"bid:{session_id}:{user_id}"
         bid_data = await redis.hgetall(bid_key)
@@ -269,7 +280,7 @@ async def get_leaderboard(
         leaderboard.append(
             LeaderboardEntry(
                 user_id=str(user_id),
-                username=username or f"User {user_id}",
+                username=username,
                 price=price,
                 score=round(score, 2),
                 rank=rank,
