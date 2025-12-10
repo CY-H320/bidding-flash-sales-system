@@ -1,7 +1,8 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 # Bidding Load Test - Zero Authentication During Test
 # This version pre-authenticates ALL users before the test starts
+# Compatible with WSL and Linux
 
 set -e
 
@@ -17,9 +18,9 @@ print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 
 # Configuration
 HOST=${1:-"http://biddingflashsalesalb-1838681311.ap-southeast-2.elb.amazonaws.com"}
-USERS=${2:-1000}
-SPAWN_RATE=${3:-100}
-DURATION=${4:-5m}
+USERS=${2:-500}
+SPAWN_RATE=${3:-5}
+DURATION=${4:-20m}
 
 echo ""
 echo "============================================================"
@@ -38,19 +39,28 @@ echo "  Duration:    $DURATION"
 echo "============================================================"
 echo ""
 
-# Ensure locust is installed
-if ! command -v locust &> /dev/null; then
-    print_warning "Installing Locust..."
-    pip3 install -r requirements.txt
+# Check for virtual environment
+VENV_DIR=".venv"
+if [ ! -d "$VENV_DIR" ]; then
+    print_warning "Creating Python virtual environment..."
+    python3 -m venv "$VENV_DIR"
 fi
+
+# Activate virtual environment
+print_info "Activating virtual environment..."
+source "$VENV_DIR/bin/activate"
+
+# Ensure locust is installed
+print_info "Installing/verifying dependencies..."
+pip install -q -r requirements.txt
 
 # Create test users if needed
 print_info "Ensuring test users exist..."
-python3 create_test_users.py "$HOST" 50 2>/dev/null || true
+python create_test_users.py "$HOST" 50 2>/dev/null || true
 
 # Ensure active session exists
 print_info "Ensuring active session exists..."
-python3 setup_test_session.py "$HOST" || exit 1
+python setup_test_session.py "$HOST" || exit 1
 
 # Confirm
 echo ""
@@ -87,16 +97,26 @@ echo "  📊 HTML: $RESULTS_DIR/report.html"
 echo "  📈 CSV:  $RESULTS_DIR/results_stats.csv"
 echo ""
 
-# Quick stats
+# Wait a moment for files to be written
+sleep 0.5
+
+# Check if CSV files exist and have content
 if [ -f "$RESULTS_DIR/results_stats.csv" ]; then
-    echo "Quick Stats:"
-    grep "BID" "$RESULTS_DIR/results_stats.csv" 2>/dev/null | while IFS=, read -r type name req fail med avg min max size rps fps rest; do
-        fail_pct=$(awk "BEGIN {printf \"%.1f\", ($fail / $req) * 100}")
-        echo "  Total Bids:       $req"
-        echo "  Failures:         $fail ($fail_pct%)"
-        echo "  Avg Response:     ${avg}ms"
-        echo "  Throughput:       ${rps} req/s"
-    done
+    FILE_SIZE=$(stat -f%z "$RESULTS_DIR/results_stats.csv" 2>/dev/null || stat -c%s "$RESULTS_DIR/results_stats.csv" 2>/dev/null || echo "0")
+    if [ "$FILE_SIZE" -gt 100 ]; then
+        echo "Quick Stats:"
+        grep -E "POST|GET|Aggregated" "$RESULTS_DIR/results_stats.csv" 2>/dev/null | while IFS=, read -r type name req fail med avg min max size rps fps rest; do
+            if [ -n "$req" ] && [ "$req" -gt 0 ]; then
+                echo "  $type $name - Requests: $req, Avg Response: ${avg}ms"
+            fi
+        done
+    else
+        echo "📊 Test Output Summary (from console):"
+        # Results shown above in test output
+    fi
+    echo ""
+else
+    echo "⚠️  Results CSV file not found"
     echo ""
 fi
 

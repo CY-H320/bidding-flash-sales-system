@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI):
     import asyncio
 
     from app.core.redis import redis_client
+    from app.tasks.batch_persist import start_batch_persist_background_task
     from app.tasks.session_monitor import session_monitor_task
 
     # Connect to Redis on startup
@@ -54,15 +55,26 @@ async def lifespan(app: FastAPI):
     monitor_task = asyncio.create_task(session_monitor_task())
     print("✓ Session monitor started")
 
+    # Start batch persist background task (every 5 seconds)
+    batch_persist_task = asyncio.create_task(
+        start_batch_persist_background_task(batch_interval=5)
+    )
+    print("✓ Batch persist task started (interval: 5s)")
+
     print("✓ Application started")
     yield
 
-    # Cancel session monitor task
+    # Cancel background tasks
     monitor_task.cancel()
+    batch_persist_task.cancel()
     try:
         await monitor_task
     except asyncio.CancelledError:
         print("✓ Session monitor stopped")
+    try:
+        await batch_persist_task
+    except asyncio.CancelledError:
+        print("✓ Batch persist task stopped")
 
     # Disconnect from Redis on shutdown
     try:

@@ -363,3 +363,42 @@ async def get_admin_stats(
         "active_sessions": active_sessions,
         "total_bids": total_bids,
     }
+
+
+@router.get("/pool-status")
+async def get_pool_status(
+    current_user: User = Depends(get_current_admin),
+):
+    """
+    Get database connection pool status (Admin only).
+
+    Useful for monitoring and diagnosing connection issues.
+    """
+    from app.core.pool_monitor import get_pool_status
+
+    status = get_pool_status()
+
+    # Calculate health score (0-100)
+    utilization = (
+        status["checked_out"] / status["total_capacity"]
+        if status["total_capacity"] > 0
+        else 0
+    )
+    health_score = 100 - (utilization * 100)
+
+    # Determine health status
+    if utilization < 0.5:
+        health_status = "healthy"
+    elif utilization < 0.75:
+        health_status = "moderate"
+    elif utilization < 0.9:
+        health_status = "high"
+    else:
+        health_status = "critical"
+
+    return {
+        **status,
+        "utilization_percent": round(utilization * 100, 1),
+        "health_score": round(health_score, 1),
+        "health_status": health_status,
+    }

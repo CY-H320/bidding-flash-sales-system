@@ -34,6 +34,19 @@ async def check_and_update_session_status(db: AsyncSession) -> list[str]:
 
     for session in expired_sessions:
         try:
+            # Force persist all unpersisted bids before finalizing
+            from app.tasks.batch_persist import force_persist_session
+
+            persisted_count = await force_persist_session(
+                session_id=session.id,
+                redis=redis,
+                db=db,
+            )
+            if persisted_count > 0:
+                print(
+                    f"🔒 Force persisted {persisted_count} bids for session {session.id}"
+                )
+
             # Finalize session results (calculate winners, final price, save rankings)
             finalize_result = await finalize_session_results(
                 session_id=session.id, redis=redis, db=db
@@ -65,11 +78,11 @@ async def session_monitor_task():
                 changed_sessions = await check_and_update_session_status(db)
 
                 if changed_sessions:
-                    # Broadcast session list update
+                    # Broadcast session list update (creates its own DB session)
                     try:
                         from app.api.websocket import broadcast_session_list_update
 
-                        await broadcast_session_list_update(db)
+                        await broadcast_session_list_update()
                         print(
                             f"✓ Broadcasted session updates for {len(changed_sessions)} sessions"
                         )
@@ -77,7 +90,15 @@ async def session_monitor_task():
                         print(f"❌ Error broadcasting session updates: {e}")
 
         except Exception as e:
-            print(f"❌ Error in session monitor task: {e}")
-
-        # Wait 10 seconds before next check
-        await asyncio.sleep(10)
+            error_msg = str(e)
+            if "QueuePool limit" in error_msg or "connection timed out" in error_msg:
+                print(
+                    f"⚠️  Connection pool exhausted in session monitor, waiting 15 seconds: {e}"
+                )
+                await asyncio.sleep(15)  # Wait longer if pool is exhausted
+            else:
+                print(f"❌ Error in session monitor task: {e}")
+                await asyncio.sleep(10)  # Normal wait
+        else:
+            # Wait 10 seconds before next check (normal operation)
+            await asyncio.sleep(10)

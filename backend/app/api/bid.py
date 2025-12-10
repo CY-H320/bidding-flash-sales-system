@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.dialects.postgresql import insert
 
 from app.api.auth import get_current_user
 
@@ -95,26 +94,26 @@ async def submit_bid(
             db=db,
         )
 
-        # Use PostgreSQL UPSERT to avoid race conditions
-        # This is atomic and handles concurrent bids safely
-        stmt = insert(BiddingSessionBid).values(
-            session_id=bid_data.session_id,
-            user_id=current_user.id,
-            bid_price=bid_data.price,
-            bid_score=result["score"],
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-        ).on_conflict_do_update(
-            index_elements=['session_id', 'user_id'],
-            set_={
-                'bid_price': bid_data.price,
-                'bid_score': result["score"],
-                'updated_at': datetime.now(timezone.utc),
-            }
-        )
+        # ⚡ HIGH PERFORMANCE: Defer PostgreSQL write to batch task
+        # Mark this session as having dirty (unpersisted) data
+        # Background task will batch persist every 5-10 seconds
+        dirty_sessions_key = "dirty_sessions"
+        await redis.sadd(dirty_sessions_key, str(bid_data.session_id))
 
-        await db.execute(stmt)
-        await db.commit()
+        # Store bid metadata in Redis for batch persistence
+        # This allows the background task to reconstruct the UPSERT
+        bid_metadata_key = f"bid_metadata:{bid_data.session_id}:{current_user.id}"
+        await redis.hset(
+            bid_metadata_key,
+            mapping={
+                "user_id": str(current_user.id),
+                "bid_price": str(bid_data.price),
+                "bid_score": str(result["score"]),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        # Expire after 1 hour (safety cleanup)
+        await redis.expire(bid_metadata_key, 3600)
 
         # WebSocket broadcast DISABLED for performance
         # Broadcasting on every bid causes leaderboard glitching
@@ -134,7 +133,6 @@ async def submit_bid(
         )
 
     except Exception as e:
-        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )

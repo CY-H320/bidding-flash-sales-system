@@ -8,7 +8,6 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_async_db
 from app.core.redis import get_redis
 from app.models.bid import BiddingSession
 from app.models.product import BiddingProduct
@@ -73,20 +72,26 @@ async def websocket_endpoint(
     websocket: WebSocket,
     session_id: str,
     redis: Redis = Depends(get_redis),
-    db: AsyncSession = Depends(get_async_db),
 ):
     """
     WebSocket endpoint for real-time leaderboard updates.
 
     Clients connect to this endpoint with a session_id and receive
     real-time updates whenever the leaderboard changes.
+
+    Note: DB session is created on-demand to avoid holding connections.
     """
     await manager.connect(websocket, session_id)
 
     try:
-        # Send initial leaderboard data
-        leaderboard = await get_leaderboard_data(session_id, redis, db)
-        await websocket.send_json({"type": "leaderboard_update", "data": leaderboard})
+        # Send initial leaderboard data (create DB session on-demand)
+        from app.core.database import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            leaderboard = await get_leaderboard_data(session_id, redis, db)
+            await websocket.send_json(
+                {"type": "leaderboard_update", "data": leaderboard}
+            )
 
         # Keep connection alive and listen for messages
         while True:
@@ -107,10 +112,11 @@ async def websocket_endpoint(
 @router.websocket("/ws/sessions")
 async def session_list_websocket(
     websocket: WebSocket,
-    db: AsyncSession = Depends(get_async_db),
 ):
     """
     WebSocket endpoint for real-time session list updates.
+
+    Note: DB session is created on-demand to avoid holding connections.
     """
     channel_id = "session_list"
 
@@ -118,12 +124,17 @@ async def session_list_websocket(
         await session_list_manager.connect(websocket, channel_id)
         print("✓ Session list WebSocket connected")
 
-        # Send initial session list data
+        # Send initial session list data (create DB session on-demand)
         try:
-            sessions = await get_all_sessions(db)
-            print(f"✓ Fetched {len(sessions)} sessions")
-            await websocket.send_json({"type": "session_list_update", "data": sessions})
-            print("✓ Sent initial session list")
+            from app.core.database import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as db:
+                sessions = await get_all_sessions(db)
+                print(f"✓ Fetched {len(sessions)} sessions")
+                await websocket.send_json(
+                    {"type": "session_list_update", "data": sessions}
+                )
+                print("✓ Sent initial session list")
         except Exception as e:
             print(f"❌ Error fetching/sending initial sessions: {e}")
             import traceback
@@ -218,12 +229,23 @@ async def get_leaderboard_data(
     }
 
 
-async def broadcast_leaderboard_update(session_id: str, redis: Redis, db: AsyncSession):
+async def broadcast_leaderboard_update(
+    session_id: str, redis: Redis, db: AsyncSession = None
+):
     """
     Broadcast leaderboard update to all connected clients for a session.
     Call this function after a bid is placed.
+
+    Note: If db is not provided, a new session will be created on-demand.
     """
-    leaderboard = await get_leaderboard_data(session_id, redis, db)
+    if db is None:
+        from app.core.database import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            leaderboard = await get_leaderboard_data(session_id, redis, db)
+    else:
+        leaderboard = await get_leaderboard_data(session_id, redis, db)
+
     await manager.broadcast_to_session(
         session_id, {"type": "leaderboard_update", "data": leaderboard}
     )

@@ -1,16 +1,17 @@
 # app/api/auth.py
-import os
-from datetime import datetime, timedelta
-from uuid import uuid4
+from datetime import datetime
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
 from passlib.context import CryptContext
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_db
+from app.core.jwt import create_access_token, decode_access_token
+from app.core.redis import get_redis
 from app.models.user import User
 from app.schemas.auth import UserLogin, UserRegister, UserResponse
 
@@ -19,13 +20,23 @@ router = APIRouter()
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# JWT settings
-SECRET_KEY = os.getenv("JWT_SECRET", "your-secret-key-change-this-in-production")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
-
 # OAuth2 scheme for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+
+def _safe_decode(value) -> str:
+    """
+    Safely decode value regardless of whether it's bytes or str.
+
+    Args:
+        value: Value to decode (bytes or str)
+
+    Returns:
+        Decoded string
+    """
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -38,25 +49,40 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_access_token(data: dict, expires_delta: timedelta = None):
-    """Create JWT access token"""
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+async def cache_user_in_redis(redis: Redis, user: User) -> None:
+    """
+    Cache user data in Redis for fast lookup.
+    TTL: 24 hours (same as JWT expiration)
+    """
+    user_cache_key = f"user:{user.id}"
+    await redis.hset(
+        user_cache_key,
+        mapping={
+            "id": str(user.id),
+            "username": user.username,
+            "email": user.email,
+            "weight": str(user.weight),
+            "is_admin": "1" if user.is_admin else "0",
+        },
+    )
+    # Expire after 24 hours (same as JWT)
+    await redis.expire(user_cache_key, 60 * 60 * 24)
 
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_async_db)
+    token: str = Depends(oauth2_scheme),
+    redis: Redis = Depends(get_redis),
 ) -> User:
     """
-    Dependency to get current authenticated user from JWT token.
-    Use this in protected endpoints.
+    ⚡ HIGH PERFORMANCE: Get current user from JWT + Redis cache.
+    ZERO PostgreSQL queries for authentication!
+
+    Flow:
+    1. Decode JWT token (no DB, just signature verification)
+    2. Try Redis cache first (< 1ms)
+    3. Return User object reconstructed from JWT + cache
+
+    This eliminates the biggest bottleneck in high-concurrency bid requests.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -64,20 +90,48 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise credentials_exception
-    except JWTError:
+    # Decode JWT token (no database query)
+    token_data = decode_access_token(token)
+    if token_data is None:
         raise credentials_exception
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
+    # Try Redis cache first
+    user_cache_key = f"user:{token_data.user_id}"
+    cached_user = await redis.hgetall(user_cache_key)
 
-    if user is None:
-        raise credentials_exception
+    if cached_user:
+        # Reconstruct User object from cache
+        # Get values with flexible key access (bytes or str)
+        user_id = cached_user.get(b"id") or cached_user.get("id")
+        username = cached_user.get(b"username") or cached_user.get("username")
+        email = cached_user.get(b"email") or cached_user.get("email")
+        weight = cached_user.get(b"weight") or cached_user.get("weight")
+        is_admin = cached_user.get(b"is_admin") or cached_user.get("is_admin")
 
+        user = User(
+            id=UUID(_safe_decode(user_id)),
+            username=_safe_decode(username),
+            email=_safe_decode(email),
+            weight=float(_safe_decode(weight)),
+            is_admin=_safe_decode(is_admin) == "1",
+            password="",  # Not needed for authentication
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        return user
+
+    # Fallback: Reconstruct minimal User from JWT (no DB query!)
+    # This happens if cache expired but JWT is still valid
+    user = User(
+        id=token_data.user_id,
+        username=token_data.username,
+        email="",  # Not critical for bidding
+        weight=1.0,  # Default weight if cache miss
+        is_admin=False,
+        password="",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
     return user
 
 
@@ -126,8 +180,11 @@ async def register(user_data: UserRegister, db: AsyncSession = Depends(get_async
     await db.commit()
     await db.refresh(new_user)
 
-    # Create token
-    access_token = create_access_token(data={"sub": str(new_user.id)})
+    # Create JWT token with username embedded
+    access_token = create_access_token(
+        user_id=new_user.id,
+        username=new_user.username,
+    )
 
     return {
         "user_id": str(new_user.id),
@@ -140,9 +197,14 @@ async def register(user_data: UserRegister, db: AsyncSession = Depends(get_async
 
 
 @router.post("/login", response_model=UserResponse)
-async def login(credentials: UserLogin, db: AsyncSession = Depends(get_async_db)):
+async def login(
+    credentials: UserLogin,
+    db: AsyncSession = Depends(get_async_db),
+    redis: Redis = Depends(get_redis),
+):
     """
     Login user and return JWT token.
+    Also caches user data in Redis for fast authentication.
 
     Request body:
     {
@@ -162,8 +224,14 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_async_db)
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Create access token
-    access_token = create_access_token(data={"sub": str(user.id)})
+    # Create JWT token with username embedded
+    access_token = create_access_token(
+        user_id=user.id,
+        username=user.username,
+    )
+
+    # Cache user in Redis for fast subsequent authentication
+    await cache_user_in_redis(redis, user)
 
     return {
         "user_id": str(user.id),

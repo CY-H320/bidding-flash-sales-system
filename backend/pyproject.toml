@@ -5,6 +5,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.123.0",
     "uvicorn>=0.38.0",
+    "uvloop>=0.20.0",
+    "httptools>=0.6.0",
     "sqlalchemy>=2.0.0",
     "asyncpg>=0.29.0",
     "redis>=5.0.0",

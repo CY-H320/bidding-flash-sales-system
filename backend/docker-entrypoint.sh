@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 export PYTHONPATH=${PYTHONPATH:-/app}
@@ -51,4 +51,6 @@ echo "Starting FastAPI with uvicorn"
 exec uvicorn app.main:app \
   --host "${UVICORN_HOST:-0.0.0.0}" \
   --port "${UVICORN_PORT:-8000}" \
-  --workers "${UVICORN_WORKERS:-4}"
+  --workers "${UVICORN_WORKERS:-16}" \
+  --loop uvloop \
+  --http httptools
