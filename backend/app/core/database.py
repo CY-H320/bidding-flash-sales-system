@@ -6,27 +6,42 @@ from sqlalchemy.orm import DeclarativeBase
 from app.core.config import settings
 
 # Create async engine with optimized connection pool for high concurrency
-# Balanced configuration: prevents "too many clients" while handling load
-# WebSocket connections use on-demand sessions (short-lived)
-# Background tasks create sessions per operation cycle
+# When using PgBouncer: Keep more connections since PgBouncer manages the real pool
+# When not using PgBouncer: Conservative settings to prevent connection exhaustion
+if settings.USE_PGBOUNCER:
+    # PgBouncer mode: More aggressive pooling since PgBouncer handles the backend
+    pool_config = {
+        "pool_size": 50,  # More connections to PgBouncer (cheap)
+        "max_overflow": 100,  # Allow bursts (total = 150 to PgBouncer)
+        "pool_recycle": 300,  # PgBouncer handles recycling, so relax here
+        "pool_timeout": 30,  # More patient since PgBouncer is fast
+        "pool_pre_ping": False,  # PgBouncer handles connection health
+    }
+else:
+    # Direct mode: Conservative settings to protect PostgreSQL
+    pool_config = {
+        "pool_size": 20,  # Fewer direct connections to PostgreSQL
+        "max_overflow": 30,  # Limited overflow (total = 50)
+        "pool_recycle": 120,  # Aggressive recycling to prevent leaks
+        "pool_timeout": 10,  # Fail fast if pool exhausted
+        "pool_pre_ping": True,  # Check connection health
+    }
+
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,  # Disable SQL logging for performance
     future=True,
-    pool_pre_ping=True,  # Check connection health before use
-    pool_size=30,  # Core pool connections (balance between availability and limits)
-    max_overflow=70,  # Additional connections for burst (total max = 100)
-    pool_recycle=300,  # Recycle connections every 5 minutes
-    pool_timeout=20,  # Wait max 20 seconds for a connection (increased to handle spikes)
-    pool_use_lifo=True,  # Use LIFO to reuse recent connections (better for connection health)
+    pool_use_lifo=True,  # Use LIFO to reuse recent connections
     connect_args={
         "server_settings": {
             "timezone": "UTC",  # Force PostgreSQL to use UTC timezone
             "application_name": "bidding_system",
         },
-        "command_timeout": 30,  # Command timeout in seconds
-        "timeout": 10,  # Connection timeout in seconds
+        "command_timeout": 30,  # Command timeout
+        "statement_cache_size": 0,  # Prepared statement cache size
+        "timeout": 15,  # Connection establishment timeout
     },
+    **pool_config,
 )
 
 # Create non-blocking session factory

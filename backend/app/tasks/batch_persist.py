@@ -2,6 +2,7 @@
 """Background task for batch persisting bids from Redis to PostgreSQL."""
 
 import asyncio
+import traceback
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -210,6 +211,7 @@ async def start_batch_persist_background_task(batch_interval: int = 5):
 
                     except Exception as e:
                         print(f"❌ Error persisting session {session_id}: {e}")
+                        print(f"📋 Traceback:\n{traceback.format_exc()}")
                         continue
 
                 if total_persisted > 0:
@@ -217,11 +219,20 @@ async def start_batch_persist_background_task(batch_interval: int = 5):
                         f"✅ Batch persisted {total_persisted} bids across {len(dirty_sessions)} sessions"
                     )
 
+        except asyncio.TimeoutError:
+            print("⚠️  Database connection timeout in batch persist, waiting 10 seconds")
+            await asyncio.sleep(10)  # Wait longer for database to recover
         except Exception as e:
             error_msg = str(e)
-            if "QueuePool limit" in error_msg or "connection timed out" in error_msg:
-                print(f"⚠️  Connection pool exhausted, waiting 5 seconds: {e}")
-                await asyncio.sleep(5)  # Wait longer if pool is exhausted
+            if (
+                "QueuePool limit" in error_msg
+                or "connection timed out" in error_msg
+                or "TimeoutError" in error_msg
+                or "too many clients" in error_msg
+            ):
+                print(f"⚠️  Connection pool exhausted, waiting 10 seconds: {e}")
+                await asyncio.sleep(10)  # Wait longer if pool is exhausted
             else:
                 print(f"❌ Error in batch persist task: {e}")
-                await asyncio.sleep(1)  # Avoid tight loop on error
+                print(f"📋 Traceback:\n{traceback.format_exc()}")
+                await asyncio.sleep(5)  # Avoid tight loop on error

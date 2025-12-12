@@ -91,6 +91,7 @@ Print-Info "Starting test... (duration: $Duration)"
 Write-Host ""
 
 # Run the test
+# Use ExtremeBiddingUser for 100% bidding (no leaderboard checks)
 $TestOutput = & locust -f locustfile.py `
     --host="$Host_Param" `
     --users $Users `
@@ -98,7 +99,8 @@ $TestOutput = & locust -f locustfile.py `
     --run-time "$Duration" `
     --headless `
     --html "$ResultsDir/report.html" `
-    --csv "$ResultsDir/results" 2>&1
+    --csv "$ResultsDir/results" `
+    ExtremeBiddingUser 2>&1
 
 # Check if test was successful
 if ($LASTEXITCODE -eq 0) {

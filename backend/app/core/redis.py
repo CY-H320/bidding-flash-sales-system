@@ -19,7 +19,11 @@ class RedisClient:
                 settings.REDIS_URL,
                 encoding="utf-8",
                 decode_responses=True,
-                max_connections=50,
+                max_connections=200,  # Increased for 500 concurrent users
+                socket_timeout=10,  # Socket operation timeout
+                socket_connect_timeout=10,  # Connection timeout
+                socket_keepalive=True,  # Enable TCP keepalive
+                health_check_interval=30,  # Check connection health every 30s
             )
             self._client = Redis(connection_pool=self._pool)
 

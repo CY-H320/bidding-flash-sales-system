@@ -39,7 +39,6 @@ const BiddingSystemUI = () => {
   const [message, setMessage] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef(null);
-  const sessionWsRef = useRef(null);
 
   useEffect(() => {
     const storedUser = localStorage.getItem('user');
@@ -58,95 +57,6 @@ const BiddingSystemUI = () => {
       }
     }
   }, []);
-
-  // WebSocket connection for session list updates
-  useEffect(() => {
-    let reconnectTimeout;
-    let isMounted = true;
-
-    const connectSessionWs = () => {
-      if (!user || !isMounted) return;
-
-      console.log('Connecting to session list WebSocket...');
-      const sessionWs = new WebSocket('ws://localhost:8000/ws/sessions');
-      sessionWsRef.current = sessionWs;
-
-      sessionWs.onopen = () => {
-        console.log('✓ Session list WebSocket connected');
-        // Force a refresh of products on connection to ensure we're in sync
-        loadProducts(user.token);
-      };
-
-      sessionWs.onclose = () => {
-        console.log('Session list WebSocket disconnected');
-        // Try to reconnect after 3 seconds
-        if (isMounted) {
-          reconnectTimeout = setTimeout(() => {
-            console.log('Attempting to reconnect session list WebSocket...');
-            connectSessionWs();
-          }, 3000);
-        }
-      };
-
-      sessionWs.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          console.log('📩 WebSocket message received:', message.type);
-          if (message.type === 'session_list_update' && message.data) {
-            console.log('✓ Session list updated, received', message.data.length, 'sessions');
-
-            // Backend sends sessions directly in message.data (array)
-            const now = new Date();
-            const formattedSessions = message.data.map(session => {
-              const endTime = new Date(session.end_time);
-              const isEnded = now > endTime || session.status === 'ended';
-
-              return {
-                id: session.session_id,
-                session_id: session.session_id,
-                product_id: session.product_id,
-                name: session.name,
-                description: session.description,
-                inventory: session.inventory,
-                base_price: session.base_price,
-                alpha: session.alpha,
-                beta: session.beta,
-                gamma: session.gamma,
-                start_time: session.start_time,
-                end_time: session.end_time,
-                status: isEnded ? 'ended' : 'active',
-                isEnded: isEnded
-              };
-            });
-
-            setProducts(formattedSessions);
-          }
-        } catch (error) {
-          console.error('❌ Error parsing WebSocket message:', error);
-        }
-      };
-
-      sessionWs.onerror = (error) => {
-        console.error('❌ Session list WebSocket error:', error);
-        sessionWs.close(); // Force close to trigger reconnect
-      };
-    };
-
-    if (user) {
-      connectSessionWs();
-    }
-
-    // Cleanup on component unmount or user logout
-    return () => {
-      isMounted = false;
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (sessionWsRef.current) {
-        sessionWsRef.current.onclose = null; // Prevent reconnect on cleanup
-        sessionWsRef.current.close();
-        sessionWsRef.current = null;
-      }
-    };
-  }, [user]);
 
   // Local timer to update session status (Active -> Ended) in real-time
   useEffect(() => {
@@ -184,33 +94,75 @@ const BiddingSystemUI = () => {
     return () => clearInterval(intervalId);
   }, [products, selectedProduct]);
 
-  // Leaderboard polling - updates every 2 seconds for active sessions
+  // Leaderboard WebSocket connection for real-time updates
   useEffect(() => {
-    if (user && selectedProduct) {
-      // Load initial leaderboard immediately
-      loadLeaderboard(selectedProduct.session_id);
-
-      // For active sessions, poll every 2 seconds
-      if (!selectedProduct.isEnded) {
-        console.log(`Starting leaderboard polling for session ${selectedProduct.session_id}`);
-        setWsConnected(true); // Indicate polling is active
-
-        const pollInterval = setInterval(() => {
-          loadLeaderboard(selectedProduct.session_id);
-        }, 2000); // Poll every 2 seconds
-
-        // Cleanup on component unmount or product change
-        return () => {
-          console.log('Stopping leaderboard polling');
-          clearInterval(pollInterval);
-          setWsConnected(false);
-        };
-      } else {
-        // For ended sessions, just show the final leaderboard (no polling)
-        setWsConnected(false);
-        console.log('Session ended, showing final leaderboard (no polling)');
+    // Cleanup function to close WebSocket
+    const cleanupWebSocket = () => {
+      if (wsRef.current) {
+        console.log('Closing leaderboard WebSocket');
+        wsRef.current.close();
+        wsRef.current = null;
       }
+      setWsConnected(false);
+    };
+
+    // If no user or no selected product, cleanup and return
+    if (!user || !selectedProduct) {
+      cleanupWebSocket();
+      return;
     }
+
+    // Load initial leaderboard immediately
+    loadLeaderboard(selectedProduct.session_id);
+
+    // For active sessions, use WebSocket for real-time updates
+    if (!selectedProduct.isEnded) {
+      console.log(`Connecting to leaderboard WebSocket for session ${selectedProduct.session_id}`);
+      
+      const leaderboardWs = new WebSocket(`${WS_URL}/${selectedProduct.session_id}`);
+      wsRef.current = leaderboardWs;
+
+      leaderboardWs.onopen = () => {
+        console.log('✓ Leaderboard WebSocket connected');
+        setWsConnected(true);
+      };
+
+      leaderboardWs.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          console.log('📩 Leaderboard WebSocket message:', message.type);
+          
+          if (message.type === 'leaderboard_update' && message.data) {
+            console.log('✓ Leaderboard updated via WebSocket');
+            setLeaderboard(message.data.leaderboard || []);
+            setHighestBid(message.data.highest_bid);
+            setThresholdScore(message.data.threshold_score);
+          }
+        } catch (error) {
+          console.error('❌ Error parsing leaderboard WebSocket message:', error);
+        }
+      };
+
+      leaderboardWs.onclose = () => {
+        console.log('Leaderboard WebSocket disconnected');
+        setWsConnected(false);
+      };
+
+      leaderboardWs.onerror = (error) => {
+        console.error('❌ Leaderboard WebSocket error:', error);
+        setWsConnected(false);
+      };
+
+      // Cleanup on component unmount or product change
+      return cleanupWebSocket;
+    } else {
+      // For ended sessions, just show the final leaderboard (no WebSocket)
+      setWsConnected(false);
+      console.log('Session ended, showing final leaderboard (no WebSocket)');
+    }
+
+    // Return cleanup function
+    return cleanupWebSocket;
   }, [user, selectedProduct]);
 
   const handleAuth = async (isLogin, username, password, email, isAdmin = false) => {
@@ -455,8 +407,10 @@ const BiddingSystemUI = () => {
     setView('login');
     setSelectedProduct(null);
     setLeaderboard([]);
-    if (wsRef.current) wsRef.current.close();
-    if (sessionWsRef.current) sessionWsRef.current.close();
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
   };
 
   return (

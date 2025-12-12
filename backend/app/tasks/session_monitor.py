@@ -2,6 +2,7 @@
 """Background task to monitor session status and broadcast updates."""
 
 import asyncio
+import traceback
 from datetime import datetime, timezone
 
 from app.core.database import AsyncSessionLocal
@@ -89,16 +90,27 @@ async def session_monitor_task():
                     except Exception as e:
                         print(f"❌ Error broadcasting session updates: {e}")
 
+        except asyncio.TimeoutError:
+            print(
+                "⚠️  Database connection timeout in session monitor, waiting 20 seconds"
+            )
+            await asyncio.sleep(20)  # Wait longer for database to recover
         except Exception as e:
             error_msg = str(e)
-            if "QueuePool limit" in error_msg or "connection timed out" in error_msg:
+            if (
+                "QueuePool limit" in error_msg
+                or "connection timed out" in error_msg
+                or "TimeoutError" in error_msg
+                or "too many clients" in error_msg
+            ):
                 print(
-                    f"⚠️  Connection pool exhausted in session monitor, waiting 15 seconds: {e}"
+                    f"⚠️  Connection pool exhausted in session monitor, waiting 20 seconds: {e}"
                 )
-                await asyncio.sleep(15)  # Wait longer if pool is exhausted
+                await asyncio.sleep(20)  # Wait longer if pool is exhausted
             else:
                 print(f"❌ Error in session monitor task: {e}")
-                await asyncio.sleep(10)  # Normal wait
+                print(f"📋 Traceback:\n{traceback.format_exc()}")
+                await asyncio.sleep(15)  # Wait before retry
         else:
             # Wait 10 seconds before next check (normal operation)
             await asyncio.sleep(10)

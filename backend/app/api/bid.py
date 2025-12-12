@@ -115,14 +115,13 @@ async def submit_bid(
         # Expire after 1 hour (safety cleanup)
         await redis.expire(bid_metadata_key, 3600)
 
-        # WebSocket broadcast DISABLED for performance
-        # Broadcasting on every bid causes leaderboard glitching
-        # Clients should poll leaderboard or use a background task
-        # if has_websocket:
-        #     try:
-        #         await broadcast_leaderboard_update(str(bid_data.session_id), redis, db)
-        #     except Exception as ws_error:
-        #         pass
+        # WebSocket broadcast for real-time leaderboard updates
+        if has_websocket:
+            try:
+                await broadcast_leaderboard_update(str(bid_data.session_id), redis, db)
+            except Exception as ws_error:
+                print(f"WebSocket broadcast error: {ws_error}")
+                pass
 
         return BidResponse(
             status="accepted",

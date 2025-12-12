@@ -12,24 +12,24 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
-print_success() { echo -e "${GREEN}✅ $1${NC}"; }
-print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+print_info() { echo -e "${BLUE}?對?  $1${NC}"; }
+print_success() { echo -e "${GREEN}??$1${NC}"; }
+print_warning() { echo -e "${YELLOW}??  $1${NC}"; }
 
 # Configuration
 HOST=${1:-"http://biddingflashsalesalb-1838681311.ap-southeast-2.elb.amazonaws.com"}
-USERS=${2:-500}
-SPAWN_RATE=${3:-5}
-DURATION=${4:-20m}
+USERS=${2:-1000}
+SPAWN_RATE=${3:-100}
+DURATION=${4:-5m}
 
 echo ""
 echo "============================================================"
-echo "🎯 BIDDING LOAD TEST"
+echo "? BIDDING LOAD TEST"
 echo "============================================================"
 echo "This version:"
-echo "  ✅ Pre-authenticates users BEFORE test"
-echo "  ✅ ZERO login/register during test"
-echo "  ✅ 100% of requests are BIDS"
+echo "  ??Pre-authenticates users BEFORE test"
+echo "  ??ZERO login/register during test"
+echo "  ??100% of requests are BIDS"
 echo ""
 echo "Configuration:"
 echo "  Host:        $HOST"
@@ -77,6 +77,7 @@ print_info "Starting test... (duration: $DURATION)"
 echo ""
 
 # Run the test
+# Use ExtremeBiddingUser for 100% bidding (no leaderboard checks)
 locust -f locustfile.py \
     --host="$HOST" \
     --users "$USERS" \
@@ -84,7 +85,8 @@ locust -f locustfile.py \
     --run-time "$DURATION" \
     --headless \
     --html "$RESULTS_DIR/report.html" \
-    --csv "$RESULTS_DIR/results"
+    --csv "$RESULTS_DIR/results" \
+    ExtremeBiddingUser
 
 # Show results
 echo ""
@@ -93,8 +95,8 @@ print_success "Test Complete!"
 echo "============================================================"
 echo ""
 print_info "Results saved to:"
-echo "  📊 HTML: $RESULTS_DIR/report.html"
-echo "  📈 CSV:  $RESULTS_DIR/results_stats.csv"
+echo "  ?? HTML: $RESULTS_DIR/report.html"
+echo "  ?? CSV:  $RESULTS_DIR/results_stats.csv"
 echo ""
 
 # Wait a moment for files to be written
@@ -111,12 +113,12 @@ if [ -f "$RESULTS_DIR/results_stats.csv" ]; then
             fi
         done
     else
-        echo "📊 Test Output Summary (from console):"
+        echo "?? Test Output Summary (from console):"
         # Results shown above in test output
     fi
     echo ""
 else
-    echo "⚠️  Results CSV file not found"
+    echo "??  Results CSV file not found"
     echo ""
 fi
 
@@ -127,4 +129,4 @@ if command -v open &> /dev/null; then
     [[ $REPLY =~ ^[Yy]$ ]] && open "$RESULTS_DIR/report.html"
 fi
 
-print_success "Done! 🎉"
+print_success "Done! ??"

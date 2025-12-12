@@ -53,4 +53,7 @@ exec uvicorn app.main:app \
   --port "${UVICORN_PORT:-8000}" \
   --workers "${UVICORN_WORKERS:-16}" \
   --loop uvloop \
-  --http httptools
+  --http httptools \
+  --log-level "${LOG_LEVEL:-info}" \
+  --access-log \
+  --use-colors

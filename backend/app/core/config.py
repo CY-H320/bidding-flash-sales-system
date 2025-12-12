@@ -16,12 +16,19 @@ class Settings(BaseSettings):
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "bidding-flash-sale-system"
 
+    # PgBouncer settings (set USE_PGBOUNCER=true to enable)
+    USE_PGBOUNCER: bool = False
+    PGBOUNCER_HOST: str = "127.0.0.1"
+    PGBOUNCER_PORT: int = 6432
+
     # Redis settings
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_PASSWORD: str | None = None
     REDIS_CACHE_EXPIRE: int = 3600
+    AUTH_CACHE_TTL_SECONDS: int = 5
+    AUTH_CACHE_MAX_ENTRIES: int = 5000
 
     # RabbitMQ settings
     RABBITMQ_HOST: str = "localhost"
@@ -43,7 +50,12 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URL(self) -> str:
-        """Generate PostgreSQL connection string"""
+        """Generate PostgreSQL connection string (via PgBouncer if enabled)"""
+        if self.USE_PGBOUNCER:
+            return (
+                f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+                f"@{self.PGBOUNCER_HOST}:{self.PGBOUNCER_PORT}/{self.POSTGRES_DB}"
+            )
         return (
             f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"

@@ -1,5 +1,8 @@
 # app/api/auth.py
+import asyncio
+import time
 from datetime import datetime
+from typing import Any, Mapping
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,6 +12,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_async_db
 from app.core.jwt import create_access_token, decode_access_token
 from app.core.redis import get_redis
@@ -22,6 +26,43 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # OAuth2 scheme for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+
+class InMemoryTokenCache:
+    """Per-process token cache that shields Redis during bursts."""
+
+    def __init__(self, ttl_seconds: int, max_entries: int) -> None:
+        self._ttl = ttl_seconds
+        self._max_entries = max_entries
+        self._store: dict[str, tuple[float, dict[str, str]]] = {}
+        self._lock = asyncio.Lock()
+
+    async def get(self, token: str) -> dict[str, str] | None:
+        now = time.monotonic()
+        async with self._lock:
+            record = self._store.get(token)
+            if not record:
+                return None
+            expires_at, payload = record
+            if expires_at <= now:
+                self._store.pop(token, None)
+                return None
+            return payload
+
+    async def set(self, token: str, payload: dict[str, str]) -> None:
+        expiry = time.monotonic() + self._ttl
+        async with self._lock:
+            if self._max_entries > 0 and len(self._store) >= self._max_entries:
+                # Drop the entry that expires soonest to keep memory bounded.
+                stale_token = min(self._store.items(), key=lambda item: item[1][0])[0]
+                self._store.pop(stale_token, None)
+            self._store[token] = (expiry, payload)
+
+
+token_cache = InMemoryTokenCache(
+    ttl_seconds=settings.AUTH_CACHE_TTL_SECONDS,
+    max_entries=settings.AUTH_CACHE_MAX_ENTRIES,
+)
 
 
 def _safe_decode(value) -> str:
@@ -49,22 +90,48 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
+def _normalize_payload(payload: Mapping[Any, Any]) -> dict[str, str]:
+    """Convert redis/local cache payload values to plain strings."""
+    normalized: dict[str, str] = {}
+    for key, value in payload.items():
+        if isinstance(key, bytes):
+            normalized_key = key.decode("utf-8")
+        else:
+            normalized_key = str(key)
+        normalized[normalized_key] = _safe_decode(value)
+    return normalized
+
+
+def _user_from_payload(payload: Mapping[str, str]) -> User:
+    return User(
+        id=UUID(payload.get("id", uuid4().hex)),
+        username=payload.get("username", ""),
+        email=payload.get("email", ""),
+        weight=float(payload.get("weight", "1.0")),
+        is_admin=payload.get("is_admin", "0") == "1",
+        password="",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+
+def _serialize_user(user: User) -> dict[str, str]:
+    return {
+        "id": str(user.id),
+        "username": user.username,
+        "email": user.email,
+        "weight": str(user.weight),
+        "is_admin": "1" if user.is_admin else "0",
+    }
+
+
 async def cache_user_in_redis(redis: Redis, user: User) -> None:
     """
     Cache user data in Redis for fast lookup.
     TTL: 24 hours (same as JWT expiration)
     """
     user_cache_key = f"user:{user.id}"
-    await redis.hset(
-        user_cache_key,
-        mapping={
-            "id": str(user.id),
-            "username": user.username,
-            "email": user.email,
-            "weight": str(user.weight),
-            "is_admin": "1" if user.is_admin else "0",
-        },
-    )
+    await redis.hset(user_cache_key, mapping=_serialize_user(user))
     # Expire after 24 hours (same as JWT)
     await redis.expire(user_cache_key, 60 * 60 * 24)
 
@@ -95,44 +162,30 @@ async def get_current_user(
     if token_data is None:
         raise credentials_exception
 
-    # Try Redis cache first
+    local_cache_hit = await token_cache.get(token)
+    if local_cache_hit:
+        return _user_from_payload(local_cache_hit)
+
+    # Try Redis cache next
     user_cache_key = f"user:{token_data.user_id}"
     cached_user = await redis.hgetall(user_cache_key)
 
     if cached_user:
-        # Reconstruct User object from cache
-        # Get values with flexible key access (bytes or str)
-        user_id = cached_user.get(b"id") or cached_user.get("id")
-        username = cached_user.get(b"username") or cached_user.get("username")
-        email = cached_user.get(b"email") or cached_user.get("email")
-        weight = cached_user.get(b"weight") or cached_user.get("weight")
-        is_admin = cached_user.get(b"is_admin") or cached_user.get("is_admin")
-
-        user = User(
-            id=UUID(_safe_decode(user_id)),
-            username=_safe_decode(username),
-            email=_safe_decode(email),
-            weight=float(_safe_decode(weight)),
-            is_admin=_safe_decode(is_admin) == "1",
-            password="",  # Not needed for authentication
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
-        )
-        return user
+        normalized = _normalize_payload(cached_user)
+        await token_cache.set(token, normalized)
+        return _user_from_payload(normalized)
 
     # Fallback: Reconstruct minimal User from JWT (no DB query!)
     # This happens if cache expired but JWT is still valid
-    user = User(
-        id=token_data.user_id,
-        username=token_data.username,
-        email="",  # Not critical for bidding
-        weight=1.0,  # Default weight if cache miss
-        is_admin=False,
-        password="",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-    )
-    return user
+    fallback_payload = {
+        "id": str(token_data.user_id),
+        "username": token_data.username or "",
+        "email": "",
+        "weight": "1.0",
+        "is_admin": "0",
+    }
+    await token_cache.set(token, fallback_payload)
+    return _user_from_payload(fallback_payload)
 
 
 @router.post("/register", response_model=UserResponse)
@@ -232,6 +285,7 @@ async def login(
 
     # Cache user in Redis for fast subsequent authentication
     await cache_user_in_redis(redis, user)
+    await token_cache.set(access_token, _serialize_user(user))
 
     return {
         "user_id": str(user.id),

@@ -1,11 +1,21 @@
 # app/main.py
+import logging
+import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 # Import API routers
 from app.api import bid
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 # Import new auth and admin routers
 try:
@@ -87,11 +97,14 @@ async def lifespan(app: FastAPI):
 
 
 # Create FastAPI app
+import os
+
 app = FastAPI(
     title="Bidding Flash Sale System API",
     description="Real-time bidding system with WebSocket support",
     version="1.0.0",
     lifespan=lifespan,
+    debug=os.getenv("DEBUG", "False").lower() == "true",
 )
 
 # CORS middleware (allow frontend to connect)
@@ -120,6 +133,37 @@ if has_admin:
 
 if has_websocket:
     app.include_router(websocket.router, tags=["WebSocket"])
+
+
+# Global exception handlers
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch-all exception handler to log and return detailed errors"""
+    logger.error(f"Unhandled exception: {exc}")
+    logger.error(f"Request: {request.method} {request.url}")
+    logger.error(f"Traceback: {traceback.format_exc()}")
+
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": str(exc),
+            "type": type(exc).__name__,
+            "traceback": traceback.format_exc().split("\n") if app.debug else None,
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle request validation errors with detailed info"""
+    logger.warning(f"Validation error: {exc.errors()}")
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "detail": exc.errors(),
+            "body": exc.body if hasattr(exc, "body") else None,
+        },
+    )
 
 
 @app.get("/")
