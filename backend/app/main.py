@@ -182,6 +182,27 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/metrics/pool")
+async def pool_metrics():
+    """
+    Monitor connection pool status.
+    Useful for debugging connection pool exhaustion during load tests.
+    """
+    from app.core.database import engine
+
+    pool = engine.pool
+
+    return {
+        "pool_size": pool.size(),
+        "checked_in_connections": pool.checkedin(),
+        "checked_out_connections": pool.checkedout(),
+        "overflow_connections": pool.overflow(),
+        "total_connections": pool.size() + pool.overflow(),
+        "queue_size": pool._queue.qsize() if hasattr(pool._queue, 'qsize') else 0,
+        "status": "healthy" if pool.checkedout() < (pool.size() + pool.overflow()) else "exhausted"
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 

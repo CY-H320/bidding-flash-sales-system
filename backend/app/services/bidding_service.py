@@ -16,8 +16,18 @@ async def check_session_active(
     db: AsyncSession,
 ) -> tuple[bool, str | None]:
     """Check if bidding session exists and is active."""
-    # Always query database for fresh data to avoid timezone issues with Redis cache
-    # Redis cache can have stale or incorrectly serialized timezone data
+    # ✅ Check Redis cache first to avoid DB query on every bid
+    cache_key = f"session:active:{session_id}"
+    cached_status = await redis.get(cache_key)
+
+    if cached_status:
+        if cached_status == "active":
+            return True, None
+        else:
+            # Cached error message
+            return False, cached_status
+
+    # Cache miss - query database
     result = await db.execute(
         select(
             BiddingSession.start_time, BiddingSession.end_time, BiddingSession.is_active
@@ -26,11 +36,15 @@ async def check_session_active(
     row = result.first()
 
     if not row:
+        # Cache the error for 60 seconds
+        await redis.set(cache_key, "Bidding session not found", ex=60)
         return False, "Bidding session not found"
 
     start_time, end_time, is_active = row
 
     if not is_active:
+        # Cache inactive status for 60 seconds
+        await redis.set(cache_key, "Bidding session is not active", ex=60)
         return False, "Bidding session is not active"
 
     # Ensure both times are timezone-aware UTC
@@ -42,19 +56,17 @@ async def check_session_active(
     # Always use UTC for comparison
     now = datetime.now(timezone.utc)
 
-    # Debug logging for timezone issues
-    print(f"🕒 Timezone check for session {session_id}:")
-    print(f"   now (UTC): {now} (tzinfo: {now.tzinfo})")
-    print(f"   start_time: {start_time} (tzinfo: {start_time.tzinfo})")
-    print(f"   end_time: {end_time} (tzinfo: {end_time.tzinfo})")
-    print(f"   now < start_time? {now < start_time}")
-    print(f"   now > end_time? {now > end_time}")
-
     if now < start_time:
+        # Cache "not started" for 30 seconds (might start soon)
+        await redis.set(cache_key, "Bidding session has not started yet", ex=30)
         return False, "Bidding session has not started yet"
     elif now > end_time:
+        # Cache "ended" for 5 minutes (won't change)
+        await redis.set(cache_key, "Bidding session has ended", ex=300)
         return False, "Bidding session has ended"
 
+    # ✅ Active session - cache for 10 seconds
+    await redis.set(cache_key, "active", ex=10)
     return True, None
 
 
